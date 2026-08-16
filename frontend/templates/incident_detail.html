@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+
+{% block title %}{{ incident_id }} — ASEP-JAGA{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Incident <span class="mono">{{ incident_id }}</span></h1>
+<p class="page-subtitle">
+  <a href="/incidents">&larr; kembali ke daftar incident</a>
+</p>
+
+<!-- incident_id disimpan agar dapat dibaca JavaScript -->
+<div id="incidentRoot" data-incident-id="{{ incident_id }}"></div>
+
+<div id="errorArea"></div>
+
+<div class="grid grid-2">
+  <!-- Alur verifikasi dua tahap -->
+  <div class="panel">
+    <div class="panel-head"><h2>Alur Verifikasi</h2></div>
+    <div class="panel-body">
+      <div class="flow" id="flowArea">
+        <div class="empty">Memuat…</div>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <!-- Ringkasan incident -->
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Ringkasan</h2>
+        <span id="statusBadge"></span>
+      </div>
+      <div class="panel-body">
+        <div class="kv" id="summaryArea">
+          <div class="muted">Memuat…</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Data konteks yang dipakai verifikasi tahap 2 -->
+    <div class="panel">
+      <div class="panel-head"><h2>Data Konteks</h2></div>
+      <div class="panel-body">
+        <div class="kv" id="contextArea"></div>
+        <p class="muted" style="margin:14px 0 0; font-size:12px">
+          Hotspot risk, weather, dan traffic saat ini
+          <strong>DEVELOPMENT MOCK</strong> (dihasilkan lokal, bukan dari
+          layanan nyata). History score dihitung dari tabel incidents.
+        </p>
+      </div>
+    </div>
+
+    <!-- Alasan keputusan server -->
+    <div class="panel">
+      <div class="panel-head"><h2>Alasan Keputusan Server</h2></div>
+      <div class="panel-body">
+        <div class="reason-box" id="reasonArea">-</div>
+      </div>
+    </div>
+
+    <!-- Aksi operator -->
+    <div class="panel">
+      <div class="panel-head"><h2>Aksi Operator</h2></div>
+      <div class="panel-body">
+        <div class="btn-row" id="actionArea"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Command yang dikirim ke perangkat -->
+<div class="panel">
+  <div class="panel-head"><h2>Command ke Perangkat</h2></div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Command</th>
+          <th>Strobe</th>
+          <th>Siren</th>
+          <th>Speaker</th>
+          <th>Voice Message</th>
+          <th>Status</th>
+          <th>Dibuat</th>
+          <th>Dieksekusi</th>
+        </tr>
+      </thead>
+      <tbody id="commandBody">
+        <tr><td colspan="9" class="empty">Memuat…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Log kejadian -->
+<div class="panel">
+  <div class="panel-head"><h2>Log Kejadian</h2></div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Waktu</th>
+          <th>Event</th>
+          <th>Pesan</th>
+        </tr>
+      </thead>
+      <tbody id="logBody">
+        <tr><td colspan="3" class="empty">Memuat…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/incident_detail.js') }}"></script>
+{% endblock %}

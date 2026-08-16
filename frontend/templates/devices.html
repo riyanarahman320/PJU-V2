@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+
+{% block title %}Devices — ASEP-JAGA{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Devices</h1>
+<p class="page-subtitle">
+  Daftar unit PJU yang terdaftar. Status dihitung dari heartbeat terakhir:
+  perangkat dianggap OFFLINE bila melewati batas waktu
+  <span class="mono" id="timeoutInfo">-</span>.
+</p>
+
+<div class="notice">
+  <strong>Population_Density belum tersedia.</strong>
+  Data kepadatan penduduk per titik PJU belum dimiliki, sehingga prediksi
+  hotspot berstatus <span class="mono">MISSING_FEATURES</span> dan
+  <span class="mono">hotspot_risk</span> bernilai <span class="mono">null</span>
+  untuk device tersebut. Nilai ini <em>tidak</em> diisi angka perkiraan:
+  pipeline model tidak memakai scaler, jadi satuan yang berbeda dari dataset
+  training akan menggeser hasil prediksi tanpa terdeteksi. Verifikasi tetap
+  berjalan dengan bukti lain, dan bobot hotspot dikeluarkan lalu dinormalisasi
+  &mdash; bukan dianggap nol.
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h2>Daftar Perangkat</h2>
+    <button class="btn btn-sm" id="btnRefresh">Segarkan</button>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Device ID</th>
+          <th>Nama</th>
+          <th>Location</th>
+          <th>Koordinat</th>
+          <th>Online/Offline</th>
+          <th>Last Seen</th>
+          <th>Firmware</th>
+          <th>Konfigurasi Konteks</th>
+          <th>Incident Aktif</th>
+          <th>Aksi</th>
+        </tr>
+      </thead>
+      <tbody id="deviceBody">
+        <tr><td colspan="10" class="empty">Memuat…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Riwayat command per perangkat, tampil setelah tombol "Command" diklik -->
+<div class="panel" id="commandPanel" style="display:none">
+  <div class="panel-head">
+    <h2>Riwayat Command &mdash; <span class="mono" id="commandDeviceId"></span></h2>
+    <button class="btn btn-sm" id="btnCloseCommands">Tutup</button>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Command</th>
+          <th>Strobe</th>
+          <th>Siren</th>
+          <th>Speaker</th>
+          <th>Status</th>
+          <th>Incident</th>
+          <th>Dibuat</th>
+        </tr>
+      </thead>
+      <tbody id="commandBody"></tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/devices.js') }}"></script>
+{% endblock %}

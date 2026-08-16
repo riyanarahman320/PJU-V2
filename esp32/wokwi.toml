@@ -1,0 +1,20 @@
+# Konfigurasi simulasi Wokwi untuk firmware ASEP-JAGA (ESP32-S3).
+#
+# SATU FIRMWARE, BUKAN DUA.
+# Wokwi TIDAK mengompilasi ulang apa pun. Kedua path di bawah menunjuk ke
+# hasil build PlatformIO yang sama dengan yang diupload ke board sungguhan,
+# sehingga tidak mungkin ada dua firmware yang berbeda perilaku.
+#
+# Alur kerjanya:
+#   1. cd esp32 && pio run          -> menghasilkan .pio/build/.../firmware.bin
+#   2. jalankan simulasi Wokwi      -> memuat file itu
+#
+# Bila firmware.bin belum ada, Wokwi akan mengeluh file tidak ditemukan.
+# Jalankan `pio run` lebih dulu.
+#
+# CATATAN: path relatif terhadap folder esp32/ (lokasi file ini).
+
+[wokwi]
+version = 1
+firmware = '.pio/build/esp32-s3-devkitc-1/firmware.bin'
+elf = '.pio/build/esp32-s3-devkitc-1/firmware.elf'

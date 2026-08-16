@@ -1,0 +1,39 @@
+t=2026-08-14T08:32:21+0700 lvl=info msg="no configuration paths supplied"
+t=2026-08-14T08:32:21+0700 lvl=info msg="using configuration at default config path" path=C:\\Users\\riyan\\AppData\\Local\\ngrok\\ngrok.yml
+t=2026-08-14T08:32:21+0700 lvl=info msg="open config file" path=C:\\Users\\riyan\\AppData\\Local\\ngrok\\ngrok.yml err=nil
+t=2026-08-14T08:32:21+0700 lvl=info msg="FIPS 140 mode" enabled=false
+t=2026-08-14T08:32:21+0700 lvl=info msg="starting web service" obj=web addr=127.0.0.1:4040 allow_hosts=[]
+t=2026-08-14T08:32:22+0700 lvl=info msg="client session established" obj=tunnels.session
+t=2026-08-14T08:32:22+0700 lvl=info msg="tunnel session started" obj=tunnels.session
+t=2026-08-14T08:32:23+0700 lvl=info msg="started tunnel" obj=tunnels name=command_line addr=http://localhost:5000 url=https://bf57-2400-9800-260-1854-d78-ebab-bfa2-fdcf.ngrok-free.app
+t=2026-08-14T08:32:31+0700 lvl=info msg=start pg=/api/tunnels id=c33ac9dbd4b83291
+t=2026-08-14T08:32:31+0700 lvl=info msg=end pg=/api/tunnels id=c33ac9dbd4b83291 status=200 dur=3.7186ms
+t=2026-08-14T08:37:10+0700 lvl=info msg="join connections" obj=join id=c288e9cefe6d l=127.0.0.1:5000 r=[2400:9800:260:1854:d78:ebab:bfa2:fdcf]:63779
+t=2026-08-14T08:45:45+0700 lvl=info msg="join connections" obj=join id=8cd6ad14be37 l=127.0.0.1:5000 r=[2400:9800:260:1854:d78:ebab:bfa2:fdcf]:59249
+t=2026-08-14T08:45:46+0700 lvl=info msg="join connections" obj=join id=ef76cbf36d69 l=127.0.0.1:5000 r=[2400:9800:260:1854:d78:ebab:bfa2:fdcf]:59252
+t=2026-08-14T08:45:48+0700 lvl=info msg="join connections" obj=join id=9d22c9fc11f1 l=127.0.0.1:5000 r=[2400:9800:260:1854:d78:ebab:bfa2:fdcf]:59256
+t=2026-08-14T08:45:50+0700 lvl=info msg="join connections" obj=join id=c29a4950e1e9 l=127.0.0.1:5000 r=[2400:9800:260:1854:d78:ebab:bfa2:fdcf]:59260
+t=2026-08-14T08:45:52+0700 lvl=info msg="join connections" obj=join id=06efcc636383 l=127.0.0.1:5000 r=[2400:9800:260:1854:d78:ebab:bfa2:fdcf]:59263
+t=2026-08-14T08:45:54+0700 lvl=info msg="join connections" obj=join id=e9d851dc6af4 l=127.0.0.1:5000 r=[2400:9800:260:1854:d78:ebab:bfa2:fdcf]:59269
+t=2026-08-14T08:45:56+0700 lvl=info msg="join connections" obj=join id=9dfeda287069 l=127.0.0.1:5000 r=[2400:9800:260:1854:d78:ebab:bfa2:fdcf]:59272
+t=2026-08-14T08:45:57+0700 lvl=info msg="join connections" obj=join id=ff96cb3fd696 l=127.0.0.1:5000 r=[2400:9800:260:1854:d78:ebab:bfa2:fdcf]:59275
+t=2026-08-14T08:45:58+0700 lvl=info msg="join connections" obj=join id=22f8ad63b548 l=127.0.0.1:5000 r=[2400:9800:260:1854:d78:ebab:bfa2:fdcf]:59278
+t=2026-08-14T08:46:00+0700 lvl=info msg="join connections" obj=join id=7b3f103e0eec l=127.0.0.1:5000 r=[2400:9800:260:1854:d78:ebab:bfa2:fdcf]:59281
+t=2026-08-14T08:46:49+0700 lvl=info msg="join connections" obj=join id=fc44a8dfb830 l=127.0.0.1:5000 r=[2400:9800:260:1854:d78:ebab:bfa2:fdcf]:59287
+t=2026-08-14T08:51:05+0700 lvl=info msg="join connections" obj=join id=6a7617fe23f4 l=127.0.0.1:5000 r=[2400:9800:260:1854:d78:ebab:bfa2:fdcf]:56630
+t=2026-08-14T08:51:06+0700 lvl=info msg="join connections" obj=join id=cc74f8eebdac l=127.0.0.1:5000 r=[2400:9800:260:1854:d78:ebab:bfa2:fdcf]:56633
+t=2026-08-14T08:53:09+0700 lvl=info msg="join connections" obj=join id=cda57cf6885c l=127.0.0.1:5000 r=[2400:9800:260:1854:d78:ebab:bfa2:fdcf]:57992
+t=2026-08-14T08:53:10+0700 lvl=info msg="join connections" obj=join id=2d3e40b85a0d l=127.0.0.1:5000 r=[2400:9800:260:1854:d78:ebab:bfa2:fdcf]:57995
+t=2026-08-14T08:55:41+0700 lvl=info msg="join connections" obj=join id=563819b61dcb l=127.0.0.1:5000 r=[2400:9800:260:1854:d78:ebab:bfa2:fdcf]:52297
+t=2026-08-14T08:55:42+0700 lvl=info msg="join connections" obj=join id=bde29e2e0526 l=127.0.0.1:5000 r=[2400:9800:260:1854:d78:ebab:bfa2:fdcf]:52300
+t=2026-08-14T08:57:08+0700 lvl=info msg="join connections" obj=join id=c42664d7b319 l=127.0.0.1:5000 r=[2400:9800:260:1854:d78:ebab:bfa2:fdcf]:57171
+t=2026-08-14T08:58:21+0700 lvl=info msg="join connections" obj=join id=1fc79916da8a l=127.0.0.1:5000 r=[2400:9800:260:1854:d78:ebab:bfa2:fdcf]:60307
+t=2026-08-14T08:59:52+0700 lvl=info msg="join connections" obj=join id=ebd42e5d7fa2 l=127.0.0.1:5000 r=[2400:9800:260:1854:d78:ebab:bfa2:fdcf]:52461
+t=2026-08-14T10:26:28+0700 lvl=eror msg="heartbeat timeout, terminating session" obj=tunnels.session obj=csess id=3e6b30f4b3ed clientid=dbefe0346a0c45518da6150414012c92
+t=2026-08-14T10:26:28+0700 lvl=eror msg="session closed, starting reconnect loop" obj=tunnels.session obj=csess id=140d0b1c92e4 err="session closed"
+t=2026-08-14T10:26:30+0700 lvl=info msg="client session established" obj=tunnels.session
+t=2026-08-14T10:26:30+0700 lvl=info msg="tunnel session started" obj=tunnels.session
+t=2026-08-14T11:18:07+0700 lvl=info msg=start pg=/api/tunnels id=e4ee552886e63145
+t=2026-08-14T11:18:07+0700 lvl=info msg=end pg=/api/tunnels id=e4ee552886e63145 status=200 dur=514.5µs
+t=2026-08-14T11:22:44+0700 lvl=info msg=start pg=/api/tunnels id=e6f0769b6718761c
+t=2026-08-14T11:22:44+0700 lvl=info msg=end pg=/api/tunnels id=e6f0769b6718761c status=200 dur=28.6443ms

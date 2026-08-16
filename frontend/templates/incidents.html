@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+
+{% block title %}Incidents — ASEP-JAGA{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Incidents</h1>
+<p class="page-subtitle">Seluruh kejadian yang tercatat, termasuk yang ditolak verifikasi.</p>
+
+<div class="panel">
+  <div class="panel-head">
+    <h2>Daftar Incident</h2>
+    <div class="btn-row">
+      <select id="filterStatus">
+        <option value="">Semua status</option>
+        <option value="open">Masih berjalan</option>
+        <option value="CONFIRMED">CONFIRMED</option>
+        <option value="DISPATCHED">DISPATCHED</option>
+        <option value="FALSE_ALARM">FALSE_ALARM</option>
+        <option value="CLOSED">CLOSED</option>
+      </select>
+      <button class="btn btn-sm" id="btnRefresh">Segarkan</button>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Incident ID</th>
+          <th>Device</th>
+          <th>Location</th>
+          <th>Waktu</th>
+          <th>SOS</th>
+          <th>Audio</th>
+          <th>Local</th>
+          <th>Server</th>
+          <th>Skor</th>
+          <th>Status</th>
+          <th>Aksi</th>
+        </tr>
+      </thead>
+      <tbody id="incidentBody">
+        <tr><td colspan="11" class="empty">Memuat…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/incidents.js') }}"></script>
+{% endblock %}

@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard — ASEP-JAGA{% endblock %}
+
+{% block head_extra %}
+  <!-- Leaflet dari CDN. Bila dijalankan tanpa internet, peta tidak muncul
+       tetapi seluruh bagian dashboard lain tetap berfungsi. -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Command Center</h1>
+<p class="page-subtitle">Pemantauan perangkat PJU dan kejadian darurat. Data disegarkan tiap 3 detik.</p>
+
+<!-- Banner emergency aktif; diisi oleh dashboard.js -->
+<div id="emergencyArea"></div>
+
+<!-- Kartu statistik -->
+<div class="grid grid-stats" style="margin-bottom:20px">
+  <div class="stat"><div class="label">Total Devices</div><div class="value" id="statTotal">-</div></div>
+  <div class="stat ok"><div class="label">Online Devices</div><div class="value" id="statOnline">-</div></div>
+  <div class="stat muted"><div class="label">Offline Devices</div><div class="value" id="statOffline">-</div></div>
+  <div class="stat danger"><div class="label">Active Emergencies</div><div class="value" id="statActive">-</div></div>
+  <div class="stat warn"><div class="label">Confirmed (24 jam)</div><div class="value" id="statConfirmed">-</div></div>
+  <div class="stat muted"><div class="label">False Alarm (24 jam)</div><div class="value" id="statFalse">-</div></div>
+</div>
+
+<!-- Peta lokasi PJU -->
+<div class="panel">
+  <div class="panel-head">
+    <h2>Peta Lokasi PJU</h2>
+    <span class="muted" id="mapNote"></span>
+  </div>
+  <div id="map"></div>
+  <div class="map-legend">
+    <span><i style="background:#f85149"></i> Emergency aktif</span>
+    <span><i style="background:#2ea043"></i> Perangkat online</span>
+    <span><i style="background:#8b9bb0"></i> Perangkat offline</span>
+  </div>
+</div>
+
+<!-- Tabel emergency aktif -->
+<div class="panel">
+  <div class="panel-head">
+    <h2>Active Emergency</h2>
+    <a class="btn btn-sm" href="/incidents">Lihat semua incident</a>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Device</th>
+          <th>Location</th>
+          <th>Time</th>
+          <th>SOS</th>
+          <th>Audio Confidence</th>
+          <th>Local Verification</th>
+          <th>Server Verification</th>
+          <th>Status</th>
+          <th>Aksi</th>
+        </tr>
+      </thead>
+      <tbody id="activeBody">
+        <tr><td colspan="9" class="empty">Memuat…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Ringkasan status perangkat -->
+<div class="panel">
+  <div class="panel-head">
+    <h2>Status Perangkat</h2>
+    <a class="btn btn-sm" href="/devices">Kelola devices</a>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Device ID</th>
+          <th>Location</th>
+          <th>Status</th>
+          <th>Last Seen</th>
+          <th>Firmware</th>
+        </tr>
+      </thead>
+      <tbody id="deviceBody">
+        <tr><td colspan="5" class="empty">Memuat…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+{% endblock %}

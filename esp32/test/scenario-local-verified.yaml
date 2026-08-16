@@ -1,0 +1,1350 @@
+/* =====================================================================
+ * ASEP-JAGA - Firmware ESP32-S3
+ * =====================================================================
+ *
+ * Alur:
+ *   BOOT -> WiFi -> REGISTER -> HEARTBEAT
+ *        -> SOS + MIC -> LOCAL VERIFICATION
+ *        -> STROBE (fail-safe lokal, tanpa menunggu server)
+ *        -> POST /api/emergency/evaluate
+ *        -> POLL /api/device/<id>/command
+ *        -> SIREN + SPEAKER (hanya bila server CONFIRMED)
+ *        -> RESET -> READY
+ *
+ * DUA ATURAN YANG TIDAK BOLEH DILANGGAR
+ * -------------------------------------
+ * 1. SOS tidak pernah melewati verifikasi audio. Tidak ada cabang di
+ *    localAudioVerified() yang mengembalikan true hanya karena tombol
+ *    ditekan. Tombol yang tertekan tidak sengaja tidak boleh membangunkan
+ *    sirene.
+ * 2. Sirene hanya menyala setelah server mengirim EMERGENCY_CONFIRMED.
+ *    Verifikasi lokal hanya menyalakan strobe.
+ *
+ * YANG BELUM NYATA DI FIRMWARE INI
+ * --------------------------------
+ * - Mikrofon: readAudioFeatures() adalah PLACEHOLDER. Tidak ada inferensi
+ *   di perangkat, tidak ada TinyML, tidak ada model edge. Nilai keyakinan
+ *   audio diisi lewat Serial untuk pengujian arsitektur.
+ * - Speaker: playVoiceMessage() hanya mencetak ke Serial bila hardware
+ * Keduanya ditandai jelas di kode dan tidak diklaim sebagai AI edge.
+ */
+
+#include <Arduino.h>
+#include <ArduinoJson.h>
+#include <HTTPClient.h>
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+
+/* esp_random() dipakai untuk membuat bootId. Header-nya berpindah tempat
+ * antar versi core ESP32, jadi keberadaannya diperiksa lebih dulu. */
+#if __has_include(<esp_random.h>)
+#include <esp_random.h>
+#endif
+
+#include "config.h"
+
+/* secrets.h tidak di-commit. Salin dari secrets.h.example lalu isi. */
+#if __has_include("secrets.h")
+#include "secrets.h"
+#else
+#error "esp32/include/secrets.h tidak ditemukan. Salin dari secrets.h.example lalu isi nilainya."
+#endif
+
+/* =====================================================================
+ * STATE
+ * ===================================================================== */
+
+enum DeviceState {
+  STATE_BOOT,
+  STATE_READY,
+  STATE_LOCAL_EMERGENCY, /* strobe aktif, menunggu keputusan server   */
+  STATE_SERVER_CONFIRMED /* strobe + sirene + speaker aktif           */
+};
+
+static DeviceState deviceState = STATE_BOOT;
+
+/* Fail-safe lokal: sekali true, hanya boleh dimatikan oleh CLEAR_EMERGENCY
+ * dari server atau reset manual. TIDAK boleh dimatikan karena HTTP gagal. */
+static bool localEmergencyActive = false;
+static bool serverConfirmed = false;
+
+static bool wifiConnected = false;
+static bool deviceRegistered = false;
+
+/* Fitur audio ringkas. Nama field mengikuti AUDIO_FEATURE_KEYS di
+ * backend/schemas.py; tidak ada format yang dikarang di sini. */
+struct AudioFeatures {
+  float energy;
+  float peak;
+  float zeroCrossingRate;
+  float dominantFrequency;
+  float durationMs;
+  bool valid; /* false bila mikrofon belum terpasang */
+};
+
+static AudioFeatures lastFeatures = {0, 0, 0, 0, 0, false};
+
+/* Nilai yang dipakai verifikasi lokal.
+ * PLACEHOLDER: diisi lewat Serial ('A 0.90'), bukan hasil inferensi. */
+static float localAudioConfidence = 0.0f;
+static String localAudioClass = AUDIO_CLASS_NORMAL;
+
+/* Tombol SOS */
+static bool sosPressed = false;
+static bool sosLatched = false; /* menandai SOS pada kejadian berjalan  */
+static int lastButtonReading = HIGH;
+static unsigned long lastButtonChangeMs = 0;
+
+/* Tombol pengujian - HANYA UNTUK SIMULASI.
+ *
+ * Keempat tombol ini menggantikan pengetikan Serial supaya demo Wokwi dapat
+ * dijalankan dengan klik saja. Tombol ini TIDAK ada di perangkat sungguhan;
+ * lihat catatan WOKWI SIMULATION PINS di config.h.
+ *
+ * Tiap tombol memanggil fungsi yang SUDAH ADA (pollServerCommand,
+ * resetEmergency, jalur verifikasi lokal). Tidak ada logika keputusan yang
+ * diduplikasi di sini: kalau tombol dan Serial berbeda perilaku, salah satu
+ * di antaranya menguji hal yang tidak nyata. */
+struct TestButton {
+  uint8_t pin;
+  int lastReading;
+  unsigned long lastChangeMs;
+  bool pressed;
+};
+
+static TestButton testButtons[] = {
+    {PIN_BTN_AUDIO_NORMAL, HIGH, 0, false},
+    {PIN_BTN_AUDIO_DISTRESS, HIGH, 0, false},
+    {PIN_BTN_POLL_SERVER, HIGH, 0, false},
+    {PIN_BTN_RESET, HIGH, 0, false},
+};
+
+static const size_t TEST_BUTTON_COUNT =
+    sizeof(testButtons) / sizeof(testButtons[0]);
+
+/* Penjadwalan non-blocking */
+static unsigned long lastHeartbeatMs = 0;
+static unsigned long lastCommandPollMs = 0;
+static unsigned long lastWifiRetryMs = 0;
+static unsigned long lastRegisterTryMs = 0;
+static unsigned long lastEventRetryMs = 0;
+static unsigned long lastStrobeToggleMs = 0;
+static unsigned long lastSirenToggleMs = 0;
+static bool strobeOn = false;
+static bool sirenOn = false;
+
+/* Retry pengiriman emergency.
+ *
+ * IDEMPOTENCY
+ * -----------
+ * currentEventId adalah IDEMPOTENCY KEY: satu kejadian SOS mendapat satu
+ * nilai, dan nilai itu dipakai kembali pada SETIAP percobaan pengiriman.
+ *
+ * Ini menutup lubang yang tidak dapat ditutup firmware sendiri: bila POST
+ * sampai ke server dan incident berhasil dibuat, tetapi responsnya hilang
+ * karena timeout, perangkat tidak dapat membedakan keadaan itu dari "request
+ * tidak pernah sampai". Perangkat harus mencoba lagi -- diam saja berarti
+ * kejadian nyata tidak pernah dilaporkan. Dengan event_id yang sama, server
+ * mengenali percobaan kedua sebagai kejadian yang sama dan mengembalikan
+ * incident yang sudah ada, bukan membuat incident kedua.
+ *
+ * MENGAPA ADA bootId, BUKAN millis() SAJA
+ * ---------------------------------------
+ * millis() kembali ke 0 setiap kali perangkat reboot. Bila event_id hanya
+ * berisi millis(), kejadian pertama setelah reboot dapat menghasilkan nilai
+ * yang sama dengan kejadian lama yang masih tersimpan di server. Akibatnya
+ * BUKAN incident ganda, melainkan yang jauh lebih berbahaya: emergency nyata
+ * dianggap duplicate lalu diabaikan. bootId acak membuat setiap sesi boot
+ * memiliki ruang nilai sendiri.
+ *
+ * eventCounter dipakai, bukan millis(), supaya nilainya tidak pernah
+ * berulang walaupun perangkat menyala sangat lama (millis() melimpah
+ * kembali ke 0 setelah sekitar 49 hari). */
+static bool eventPending = false;
+static uint32_t bootId = 0;
+static unsigned long eventCounter = 0;
+static String currentEventId = "";
+static String activeIncidentId = "";
+
+/* =====================================================================
+ * ABSTRAKSI HARDWARE
+ * ===================================================================== */
+
+static inline void writeActuator(uint8_t pin, bool on) {
+#if ACTUATOR_ACTIVE_HIGH
+  digitalWrite(pin, on ? HIGH : LOW);
+#else
+  digitalWrite(pin, on ? LOW : HIGH);
+#endif
+}
+
+static void setStrobe(bool on) {
+  strobeOn = on;
+  writeActuator(PIN_STROBE, on);
+}
+
+static void setSiren(bool on) {
+  sirenOn = on;
+  writeActuator(PIN_SIREN, on);
+}
+
+static void setSpeaker(bool on) { writeActuator(PIN_SPEAKER, on); }
+
+/* =====================================================================
+ * DEKLARASI
+ * ===================================================================== */
+
+void connectWiFi();
+bool registerDevice();
+void sendHeartbeat();
+void handleSos();
+AudioFeatures readAudioFeatures();
+bool localAudioVerified();
+void activateLocalStrobe();
+void beginNewEvent();
+bool sendEmergencyEvent();
+void pollServerCommand();
+void activateSiren();
+void playVoiceMessage(const String &message);
+void resetEmergency();
+void handleNetworkFailure();
+void handleSerialCommands();
+void handleTestButtons();
+void triggerSosPath(const char *sumber);
+void updateOutputs();
+void acknowledgeCommand(long commandId);
+
+/* =====================================================================
+ * WIFI
+ * =====================================================================
+ * BOOT -> CONNECTING -> CONNECTED
+ *                    -> FAILED -> LOCAL MODE
+ *
+ * Kegagalan WiFi TIDAK menghentikan setup(). Perangkat harus tetap dapat
+ * menyalakan strobe walaupun tidak ada jaringan sama sekali.
+ */
+void connectWiFi() {
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiConnected = true;
+    return;
+  }
+
+  Serial.printf("[WIFI] Menyambung ke '%s' ...\n", WIFI_SSID);
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false); /* latensi lebih stabil untuk polling command */
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  const unsigned long mulai = millis();
+  while (WiFi.status() != WL_CONNECTED &&
+         millis() - mulai < WIFI_CONNECT_TIMEOUT_MS) {
+    /* Menunggu dengan jeda pendek. Selama boot belum ada emergency, jadi
+     * jeda ini tidak menunda respons strobe. Setelah boot, sambung ulang
+     * ditangani handleNetworkFailure() tanpa blocking. */
+    delay(250);
+    Serial.print('.');
+  }
+  Serial.println();
+
+  wifiConnected = (WiFi.status() == WL_CONNECTED);
+
+  if (wifiConnected) {
+    Serial.print("[WIFI] CONNECTED, IP: ");
+    Serial.println(WiFi.localIP());
+    digitalWrite(PIN_STATUS_LED, HIGH);
+  } else {
+    Serial.println("[WIFI] FAILED -> LOCAL MODE");
+    Serial.println("[WIFI] Strobe tetap berfungsi tanpa jaringan.");
+    digitalWrite(PIN_STATUS_LED, LOW);
+  }
+
+  lastWifiRetryMs = millis();
+}
+
+/* =====================================================================
+ * HTTP
+ * =====================================================================
+ * Timeout dibuat singkat (HTTP_TIMEOUT_MS) supaya loop utama tidak membeku
+ * saat server tidak terjangkau.
+ *
+ * CATATAN TLS: bila SERVER_BASE_URL memakai https, firmware memanggil
+ * setInsecure() sehingga sertifikat server TIDAK diverifikasi. Ini dapat
+ * diterima untuk prototype di jaringan lokal atau lewat ngrok, tetapi
+ * berarti koneksi rawan man-in-the-middle: pihak di tengah dapat membaca
+ * DEVICE_API_KEY dan memalsukan command. Untuk penggunaan sungguhan,
+ * sematkan root CA server dan ganti setInsecure() dengan setCACert().
+ */
+static bool serverUsesTls() {
+  return String(SERVER_BASE_URL).startsWith("https://");
+}
+
+/* Melakukan satu request HTTP. Mengembalikan kode status HTTP, atau nilai
+ * negatif bila gagal di tingkat koneksi. Body respons ditulis ke `response`. */
+static int httpRequest(const char *method, const String &path,
+                       const String &body, String &response) {
+  if (WiFi.status() != WL_CONNECTED) {
+    return -1000; /* tidak ada jaringan */
+  }
+
+  const String url = String(SERVER_BASE_URL) + path;
+  HTTPClient http;
+  bool mulai = false;
+
+  /* WiFiClientSecure dibuat di dalam blok ini agar memori dilepas setelah
+   * request selesai. */
+  WiFiClientSecure clientTls;
+  WiFiClient clientPlain;
+
+  if (serverUsesTls()) {
+    clientTls.setInsecure(); /* lihat CATATAN TLS di atas */
+    clientTls.setTimeout(HTTP_TIMEOUT_MS / 1000);
+    mulai = http.begin(clientTls, url);
+  } else {
+    clientPlain.setTimeout(HTTP_TIMEOUT_MS / 1000);
+    mulai = http.begin(clientPlain, url);
+  }
+
+  if (!mulai) {
+    Serial.printf("[HTTP] Gagal memulai koneksi ke %s\n", url.c_str());
+    return -1001;
+  }
+
+  http.setTimeout(HTTP_TIMEOUT_MS);
+  http.setConnectTimeout(HTTP_TIMEOUT_MS);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Accept", "application/json");
+  /* Perangkat memakai DEVICE_API_KEY. Kunci operator tidak pernah ada di
+   * firmware. */
+  http.addHeader("X-API-Key", DEVICE_API_KEY);
+
+  int status;
+  if (strcmp(method, "GET") == 0) {
+    status = http.GET();
+  } else {
+    status = http.POST(body);
+  }
+
+  if (status > 0) {
+    response = http.getString();
+  } else {
+    Serial.printf("[HTTP] %s %s gagal: %s\n", method, path.c_str(),
+                  http.errorToString(status).c_str());
+  }
+
+  http.end();
+  return status;
+}
+
+/* =====================================================================
+ * REGISTER DEVICE
+ * =====================================================================
+ * POST /api/device/register
+ * Idempotent di server: device_id yang sudah ada akan diperbarui (200)
+ * alih-alih menghasilkan duplikat. Firmware memanggilnya setiap boot.
+ */
+bool registerDevice() {
+  if (WiFi.status() != WL_CONNECTED) {
+    return false;
+  }
+
+  lastRegisterTryMs = millis();
+
+  /* Field mengikuti validate_device_register() di backend/schemas.py. */
+  JsonDocument doc;
+  doc["device_id"] = DEVICE_ID;
+  doc["name"] = DEVICE_NAME;
+  doc["location"] = DEVICE_LOCATION;
+  doc["latitude"] = DEVICE_LATITUDE;
+  doc["longitude"] = DEVICE_LONGITUDE;
+  doc["firmware_version"] = FIRMWARE_VERSION;
+
+  String body;
+  serializeJson(doc, body);
+
+  String response;
+  const int status = httpRequest("POST", "/api/device/register", body, response);
+
+  /* 201 = device baru, 200 = data diperbarui. Keduanya berhasil. */
+  if (status == 200 || status == 201) {
+    deviceRegistered = true;
+    Serial.printf("[REGISTER] Berhasil (HTTP %d) sebagai %s\n", status,
+                  DEVICE_ID);
+    return true;
+  }
+
+  if (status == 401) {
+    Serial.println("[REGISTER] HTTP 401: DEVICE_API_KEY salah atau tidak "
+                   "dikirim. Periksa secrets.h dan .env server.");
+  } else if (status > 0) {
+    Serial.printf("[REGISTER] Gagal, HTTP %d: %s\n", status, response.c_str());
+  } else {
+    Serial.println("[REGISTER] Gagal: server tidak terjangkau.");
+  }
+
+  deviceRegistered = false;
+  return false;
+}
+
+/* =====================================================================
+ * HEARTBEAT
+ * =====================================================================
+ * POST /api/device/heartbeat setiap HEARTBEAT_INTERVAL_MS.
+ * Respons menyertakan has_pending_command, dipakai sebagai petunjuk untuk
+ * segera melakukan polling command.
+ */
+void sendHeartbeat() {
+  if (WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  lastHeartbeatMs = millis();
+
+  /* Field mengikuti validate_heartbeat(). `audio` dilaporkan false karena
+   * mikrofon belum terpasang: melaporkan true akan menyesatkan operator. */
+  JsonDocument doc;
+  doc["device_id"] = DEVICE_ID;
+  doc["status"] = "ONLINE";
+  doc["network"] = true;
+  doc["audio"] = lastFeatures.valid;
+  doc["camera"] = false;
+  doc["firmware_version"] = FIRMWARE_VERSION;
+
+  String body;
+  serializeJson(doc, body);
+
+  String response;
+  const int status =
+      httpRequest("POST", "/api/device/heartbeat", body, response);
+
+  if (status == 404) {
+    /* Device belum terdaftar di server (mis. database direset). */
+    Serial.println("[HEARTBEAT] HTTP 404: device belum terdaftar, "
+                   "mendaftar ulang.");
+    deviceRegistered = false;
+    return;
+  }
+
+  if (status != 200) {
+    handleNetworkFailure();
+    return;
+  }
+
+  JsonDocument respons;
+  if (deserializeJson(respons, response) != DeserializationError::Ok) {
+    Serial.println("[HEARTBEAT] Respons bukan JSON yang sah.");
+    return;
+  }
+
+  const bool pending = respons["data"]["has_pending_command"] | false;
+  if (pending) {
+    /* Ada command menunggu: ambil pada siklus berikutnya tanpa menunggu
+     * interval polling penuh. */
+    lastCommandPollMs = 0;
+  }
+
+  Serial.printf("[HEARTBEAT] OK%s\n",
+                pending ? " (ada command menunggu)" : "");
+}
+
+/* =====================================================================
+ * MIKROFON - PLACEHOLDER
+ * =====================================================================
+ * MICROPHONE HARDWARE INTEGRATION REQUIRED
+ *
+ * Belum ada mikrofon yang dipilih, jadi tidak ada driver di sini. Menulis
+ * driver untuk hardware yang belum ditentukan hanya akan menjadi kode mati
+ * yang menyesatkan.
+ *
+ * Ketika mikrofon dipasang (mis. INMP441 atau SPH0645 lewat I2S), fungsi ini
+ * yang diisi: baca blok sampel, hitung energy / peak / zero-crossing rate /
+ * dominant frequency, lalu isi struct AudioFeatures dan set valid = true.
+ *
+ * Nama field mengikuti AUDIO_FEATURE_KEYS di backend/schemas.py, sehingga
+ * server dapat menjalankan model audionya tanpa perubahan apa pun.
+ *
+ * Selama valid == false, firmware TIDAK mengirim audio_features ke server
+ * dan tidak mengaku memiliki bukti audio yang tidak dimilikinya.
+ */
+AudioFeatures readAudioFeatures() {
+  AudioFeatures fitur = {0, 0, 0, 0, 0, false};
+
+  /* MICROPHONE HARDWARE INTEGRATION REQUIRED
+   *
+   * Contoh kerangka bila memakai I2S nanti:
+   *   i2s_read(I2S_NUM_0, buffer, sizeof(buffer), &bytesRead, portMAX_DELAY);
+   *   fitur.energy = hitungEnergy(buffer, jumlahSampel);
+   *   ...
+   *   fitur.valid = true;
+   */
+
+  return fitur;
+}
+
+/* =====================================================================
+ * VERIFIKASI LOKAL (TAHAP 1)
+ * =====================================================================
+ * Cermin dari backend/services/verification.py::verify_local().
+ * Ambang di config.h HARUS sama dengan Config.AUDIO_CONFIDENCE_MIN, supaya
+ * perangkat dan server tidak mengambil keputusan berbeda atas kejadian yang
+ * sama.
+ *
+ * ATURAN: SOS TIDAK PERNAH MELEWATI VERIFIKASI AUDIO.
+ * Tidak ada cabang di bawah yang mengembalikan true hanya karena sosPressed.
+ */
+static bool isEmergencyAudioClass(const String &kelas) {
+  String teks = kelas;
+  teks.toUpperCase();
+
+  if (teks == "NORMAL" || teks == "NONE" || teks == "SILENCE" ||
+      teks == "UNKNOWN" || teks.length() == 0) {
+    return false;
+  }
+
+  /* Kata kunci sama dengan _KATA_DARURAT di verification.py. */
+  static const char *kata[] = {"SCREAM", "TERIAK", "HELP",   "DISTRESS",
+                               "TOLONG", "SHOUT",  "IMPACT", "BENTUR",
+                               "CRASH",  "GLASS"};
+  for (const char *k : kata) {
+    if (teks.indexOf(k) >= 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool localAudioVerified() {
+  const bool audioRelevan = isEmergencyAudioClass(localAudioClass);
+  const bool audioKuat = localAudioConfidence >= AUDIO_CONFIDENCE_MIN;
+
+  /* SOS + audio relevan + keyakinan >= ambang */
+  if (sosPressed && audioKuat && audioRelevan) {
+    return true;
+  }
+  /* SOS + suara sangat kuat: kelas mungkin salah, tetapi ada suara keras
+   * bersamaan dengan tombol ditekan. */
+  if (sosPressed && localAudioConfidence >= AUDIO_CONFIDENCE_STRONG) {
+    return true;
+  }
+  /* Tanpa SOS: korban mungkin tidak sanggup menekan tombol, jadi ambang
+   * dinaikkan. */
+  if (!sosPressed && audioRelevan &&
+      localAudioConfidence >= AUDIO_CONFIDENCE_NO_SOS) {
+    return true;
+  }
+  return false;
+}
+
+/* =====================================================================
+ * STROBE - FAIL-SAFE LOKAL
+ * =====================================================================
+ * Dipanggil SEGERA setelah verifikasi lokal berhasil, sebelum HTTP apa pun.
+ * Tidak menunggu WiFi, server, atau respons jaringan.
+ */
+void activateLocalStrobe() {
+  localEmergencyActive = true;
+  deviceState = STATE_LOCAL_EMERGENCY;
+  setStrobe(true);
+  lastStrobeToggleMs = millis();
+  Serial.println("[STROBE] ON (fail-safe lokal, tidak menunggu server)");
+}
+
+/* =====================================================================
+ * MULAI KEJADIAN BARU
+ * =====================================================================
+ * Membuat satu event_id untuk satu kejadian SOS.
+ *
+ * Dipanggil TEPAT SEKALI per kejadian, pada saat verifikasi lokal berhasil.
+ * Retry TIDAK boleh memanggil fungsi ini: memanggilnya ulang akan membuat
+ * kunci baru, dan server tidak lagi dapat mengenali pengiriman ulang itu
+ * sebagai kejadian yang sama.
+ *
+ * Bentuk nilai: "<bootId heksadesimal>-<nomor urut>", misalnya "a3f19c02-1".
+ * Jauh di bawah batas 64 karakter yang diterima server.
+ */
+void beginNewEvent() {
+  eventCounter++;
+  currentEventId = String(bootId, HEX) + "-" + String(eventCounter);
+  Serial.printf("[EVENT] Kejadian baru, event_id = %s\n",
+                currentEventId.c_str());
+}
+
+/* =====================================================================
+ * KIRIM EMERGENCY KE SERVER
+ * =====================================================================
+ * POST /api/emergency/evaluate
+ * Field mengikuti validate_emergency_evaluate() di backend/schemas.py.
+ */
+bool sendEmergencyEvent() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[EVENT] Tidak ada jaringan; event disimpan untuk retry.");
+    eventPending = true;
+    return false;
+  }
+
+  lastEventRetryMs = millis();
+
+  JsonDocument doc;
+  doc["device_id"] = DEVICE_ID;
+  doc["sos"] = sosLatched;
+  doc["audio_confidence"] = localAudioConfidence;
+  doc["audio_class"] = localAudioClass;
+  /* Perangkat mengirim keputusan tahap 1 miliknya. Server memakai nilai ini
+   * dan tidak menghitung ulang. */
+  doc["local_decision"] = "LOCAL_VERIFIED";
+  doc["latitude"] = DEVICE_LATITUDE;
+  doc["longitude"] = DEVICE_LONGITUDE;
+
+  /* IDEMPOTENCY KEY. Nilainya tetap sama pada setiap retry kejadian ini,
+   * sehingga timeout jaringan tidak menghasilkan incident ganda di server.
+   * Dikirim hanya bila ada isinya: string kosong tidak dianggap kunci oleh
+   * server, jadi lebih jujur tidak mengirimnya sama sekali. */
+  if (currentEventId.length() > 0) {
+    doc["event_id"] = currentEventId;
+  }
+
+  /* audio_features HANYA dikirim bila mikrofon benar-benar membaca sesuatu.
+   * Mengirim angka placeholder akan membuat server menjalankan model audio
+   * atas data yang tidak pernah diukur. */
+  if (lastFeatures.valid) {
+    JsonObject fitur = doc["audio_features"].to<JsonObject>();
+    fitur["energy"] = lastFeatures.energy;
+    fitur["peak"] = lastFeatures.peak;
+    fitur["zero_crossing_rate"] = lastFeatures.zeroCrossingRate;
+    fitur["dominant_frequency"] = lastFeatures.dominantFrequency;
+    fitur["duration_ms"] = lastFeatures.durationMs;
+  }
+
+  String body;
+  serializeJson(doc, body);
+
+  Serial.printf("[EVENT] Mengirim (event_id %s) ...\n",
+                currentEventId.length() ? currentEventId.c_str() : "-");
+
+  String response;
+  const int status =
+      httpRequest("POST", "/api/emergency/evaluate", body, response);
+
+  if (status == 404) {
+    Serial.println("[EVENT] HTTP 404: device belum terdaftar di server.");
+    deviceRegistered = false;
+    eventPending = true;
+    return false;
+  }
+
+  if (status != 200) {
+    if (status == 400) {
+      /* Payload ditolak server. Retry tidak akan menolong, jadi jangan
+       * mengulang terus-menerus. Strobe tetap menyala. */
+      Serial.printf("[EVENT] HTTP 400, payload ditolak: %s\n",
+                    response.c_str());
+      eventPending = false;
+      return false;
+    }
+    Serial.println("[EVENT] Gagal terkirim; akan dicoba lagi.");
+    eventPending = true;
+    handleNetworkFailure();
+    return false;
+  }
+
+  JsonDocument respons;
+  if (deserializeJson(respons, response) != DeserializationError::Ok) {
+    Serial.println("[EVENT] Respons bukan JSON yang sah.");
+    eventPending = true;
+    return false;
+  }
+
+  JsonObject data = respons["data"];
+  const char *incidentId = data["incident_id"] | "";
+  const char *serverDecision = data["server_decision"] | "";
+  const float serverScore = data["server_score"] | 0.0f;
+  /* true bila server mengenali request ini sebagai pengiriman ulang. */
+  const bool duplicate = data["duplicate"] | false;
+
+  activeIncidentId = String(incidentId);
+  eventPending = false;
+
+  Serial.printf("[EVENT] %s -> %s (skor %.2f)%s\n", incidentId, serverDecision,
+                serverScore,
+                duplicate ? " [retry dikenali server, incident tidak digandakan]"
+                          : "");
+
+  /* Keputusan server TIDAK langsung menyalakan sirene di sini. Sirene hanya
+   * menyala setelah command EMERGENCY_CONFIRMED benar-benar diterima lewat
+   * polling, supaya hanya ada satu jalur yang mengaktifkannya. */
+  lastCommandPollMs = 0;
+  return true;
+}
+
+/* =====================================================================
+ * POLLING COMMAND
+ * =====================================================================
+ * GET /api/device/<id>/command
+ *
+ * Server hanya mengirim command berstatus PENDING satu kali; setelah diambil
+ * statusnya menjadi SENT. Karena itu "NONE" pada polling berikutnya BUKAN
+ * berarti emergency berakhir — hanya berarti tidak ada perintah baru.
+ *
+ * Bentuk respons (command_service.command_payload):
+ *   {"command": "EMERGENCY_CONFIRMED"|"CLEAR_EMERGENCY"|"NONE",
+ *    "strobe": bool, "siren": bool, "speaker": bool,
+ *    "voice_message": str, "command_id": int|null, "incident_id": str|null}
+ */
+void pollServerCommand() {
+  if (WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  lastCommandPollMs = millis();
+
+  const String path = String("/api/device/") + DEVICE_ID + "/command";
+  String response;
+  const int status = httpRequest("GET", path, "", response);
+
+  if (status == 404) {
+    Serial.println("[COMMAND] HTTP 404: device belum terdaftar.");
+    deviceRegistered = false;
+    return;
+  }
+  if (status != 200) {
+    handleNetworkFailure();
+    return;
+  }
+
+  JsonDocument respons;
+  if (deserializeJson(respons, response) != DeserializationError::Ok) {
+    Serial.println("[COMMAND] Respons bukan JSON yang sah.");
+    return;
+  }
+
+  JsonObject data = respons["data"];
+  const String command = String((const char *)(data["command"] | "NONE"));
+  const bool wantStrobe = data["strobe"] | false;
+  const bool wantSiren = data["siren"] | false;
+  const bool wantSpeaker = data["speaker"] | false;
+  const String voice = String((const char *)(data["voice_message"] | ""));
+  const long commandId = data["command_id"] | -1;
+
+  if (command == "NONE") {
+    /* PENTING: jangan mematikan strobe di sini.
+     * localEmergencyActive adalah fail-safe lokal dan hanya berakhir lewat
+     * CLEAR_EMERGENCY atau reset manual. Mematikan strobe karena "NONE"
+     * akan memadamkan peringatan di lokasi kejadian yang masih berlangsung. */
+    return;
+  }
+
+  Serial.printf("[COMMAND] Diterima: %s (id %ld)\n", command.c_str(),
+                commandId);
+
+  if (command == "EMERGENCY_CONFIRMED") {
+    serverConfirmed = true;
+    deviceState = STATE_SERVER_CONFIRMED;
+
+    if (wantStrobe) {
+      localEmergencyActive = true;
+      setStrobe(true);
+    }
+    if (wantSiren) {
+      activateSiren();
+    }
+    if (wantSpeaker) {
+      playVoiceMessage(voice.length() > 0 ? voice
+                                         : "Petugas sedang menuju lokasi.");
+    }
+
+    acknowledgeCommand(commandId);
+
+  } else if (command == "CLEAR_EMERGENCY") {
+    /* Server menyatakan kejadian selesai atau false alarm. Ini satu-satunya
+     * jalur jaringan yang boleh mengakhiri fail-safe lokal. */
+    Serial.println("[COMMAND] CLEAR_EMERGENCY: mengakhiri keadaan darurat.");
+    acknowledgeCommand(commandId);
+    resetEmergency();
+
+  } else {
+    /* Command tidak dikenal: jangan mengubah keadaan aktuator. Lebih baik
+     * mempertahankan keadaan aman daripada menuruti perintah yang tidak
+     * dipahami. */
+    Serial.printf("[COMMAND] Tidak dikenal: '%s', diabaikan.\n",
+                  command.c_str());
+  }
+}
+
+/* POST /api/device/<id>/command/ack — memberi tahu server bahwa command
+ * sudah dijalankan. Kegagalan ack tidak membatalkan aksi yang sudah
+ * dilakukan; sirene tetap menyala. */
+void acknowledgeCommand(long commandId) {
+  if (WiFi.status() != WL_CONNECTED || commandId <= 0) {
+    return;
+  }
+
+  JsonDocument doc;
+  doc["command_id"] = commandId;
+
+  String body;
+  serializeJson(doc, body);
+
+  const String path = String("/api/device/") + DEVICE_ID + "/command/ack";
+  String response;
+  const int status = httpRequest("POST", path, body, response);
+
+  Serial.printf("[ACK] command %ld -> HTTP %d\n", commandId, status);
+}
+
+/* =====================================================================
+ * SIRENE
+ * =====================================================================
+ * HANYA dipanggil setelah command EMERGENCY_CONFIRMED dari server.
+ * Verifikasi lokal tidak pernah menyalakan sirene.
+ *
+ * Pola nyala-mati dijalankan non-blocking di updateOutputs().
+ */
+void activateSiren() {
+  if (!serverConfirmed) {
+    /* Penjagaan ganda: bila suatu saat ada kode yang memanggil fungsi ini
+     * tanpa konfirmasi server, permintaan ditolak. */
+    Serial.println("[SIREN] Ditolak: server belum CONFIRMED.");
+    return;
+  }
+  setSiren(true);
+  lastSirenToggleMs = millis();
+  Serial.println("[SIREN] ON (server CONFIRMED)");
+}
+
+/* =====================================================================
+ * SPEAKER
+ * =====================================================================
+ * Hardware belum tersedia. Fungsi ini mencetak pesan ke Serial dan
+ * menyalakan pin speaker sebagai penanda. TIDAK ada klaim bahwa suara
+ * benar-benar keluar.
+ */
+void playVoiceMessage(const String &message) {
+  setSpeaker(true);
+  Serial.printf("[SPEAKER] %s\n", message.c_str());
+  Serial.println("[SPEAKER] CATATAN: modul suara belum terpasang; pesan di "
+                 "atas hanya dicetak ke Serial.");
+}
+
+/* =====================================================================
+ * RESET
+ * =====================================================================
+ * Mengembalikan perangkat ke READY.
+ */
+void resetEmergency() {
+  setStrobe(false);
+  setSiren(false);
+  setSpeaker(false);
+
+  localEmergencyActive = false;
+  serverConfirmed = false;
+  sosLatched = false;
+  eventPending = false;
+  activeIncidentId = "";
+  /* Kejadian ini selesai. Kunci dikosongkan supaya kejadian berikutnya
+   * mendapat kunci baru dan tidak dianggap retry dari kejadian yang sudah
+   * ditutup. */
+  currentEventId = "";
+
+  /* Keyakinan audio dikembalikan ke nol supaya kejadian berikutnya tidak
+   * mewarisi nilai uji sebelumnya. */
+  localAudioConfidence = 0.0f;
+  localAudioClass = AUDIO_CLASS_NORMAL;
+
+  deviceState = STATE_READY;
+  Serial.println("[RESET] Semua output OFF. Perangkat READY.");
+}
+
+/* =====================================================================
+ * KEGAGALAN JARINGAN
+ * =====================================================================
+ * Kegagalan HTTP TIDAK PERNAH mematikan localEmergencyActive. Kejadian di
+ * lokasi tidak berubah hanya karena server tidak dapat dihubungi.
+ */
+void handleNetworkFailure() {
+  wifiConnected = (WiFi.status() == WL_CONNECTED);
+  digitalWrite(PIN_STATUS_LED, wifiConnected ? HIGH : LOW);
+
+  if (localEmergencyActive) {
+    Serial.println("[NETWORK] Server tidak terjangkau. STROBE TETAP ON "
+                   "(fail-safe lokal dipertahankan).");
+  }
+}
+
+/* =====================================================================
+ * TOMBOL SOS
+ * =====================================================================
+ * Debounce memakai millis(), tanpa delay panjang, supaya loop tetap responsif.
+ * Tombol dipasang ke GND dengan INPUT_PULLUP: LOW berarti ditekan.
+ */
+void handleSos() {
+  const int reading = digitalRead(PIN_SOS_BUTTON);
+
+  if (reading != lastButtonReading) {
+    lastButtonChangeMs = millis();
+    lastButtonReading = reading;
+    return;
+  }
+
+  if (millis() - lastButtonChangeMs < BUTTON_DEBOUNCE_MS) {
+    return; /* masih dalam masa debounce */
+  }
+
+  const bool ditekan = (reading == LOW);
+
+  if (ditekan && !sosPressed) {
+    sosPressed = true;
+    triggerSosPath("tombol");
+  } else if (!ditekan && sosPressed) {
+    sosPressed = false;
+    /* sosLatched sengaja TIDAK direset di sini: kejadian yang sudah berjalan
+     * tidak berakhir hanya karena tombol dilepas. */
+  }
+}
+
+/* =====================================================================
+ * TOMBOL PENGUJIAN - SIMULASI HARDWARE
+ * =====================================================================
+ * Empat tombol virtual di Wokwi supaya pengujian tidak perlu mengetik Serial:
+ *
+ *   NORMAL AUDIO   -> keyakinan 0.20, kelas Normal   (harus DITOLAK)
+ *   DISTRESS AUDIO -> keyakinan 0.90, kelas SCREAM   (harus LOLOS)
+ *   POLL SERVER    -> pollServerCommand()
+ *   RESET          -> resetEmergency()
+ *
+ * Tombol audio TIDAK menjalankan emergency. Keduanya hanya menyetel keadaan
+ * audio, persis seperti 'A' dan 'K' di Serial. Emergency tetap harus dimulai
+ * dari tombol SOS, sehingga aturan "SOS tidak pernah melewati verifikasi
+ * audio" tetap dapat diuji.
+ *
+ * TIDAK ADA MODEL AI DI SINI. Kedua tombol hanya menyetel angka. Mikrofon
+ * dan inferensi di perangkat tetap belum ada.
+ */
+
+/* Menyetel keadaan audio ke nilai yang harus DITOLAK verifikasi lokal. */
+static void simulateAudioNormal() {
+  localAudioConfidence = SIM_AUDIO_NORMAL_CONFIDENCE;
+  localAudioClass = AUDIO_CLASS_NORMAL;
+
+  Serial.println("[AUDIO TEST] NORMAL");
+  Serial.printf("  confidence = %.2f\n", localAudioConfidence);
+  Serial.printf("  class      = %s\n", localAudioClass.c_str());
+  Serial.println("  Nilai uji, bukan hasil inferensi di perangkat.");
+  Serial.println("  Tekan SOS: seharusnya LOCAL_REJECTED.");
+}
+
+/* Menyetel keadaan audio ke nilai yang harus LOLOS verifikasi lokal. */
+static void simulateAudioDistress() {
+  localAudioConfidence = SIM_AUDIO_DISTRESS_CONFIDENCE;
+  localAudioClass = AUDIO_CLASS_SCREAM;
+
+  Serial.println("[AUDIO TEST] DISTRESS");
+  Serial.printf("  confidence = %.2f\n", localAudioConfidence);
+  Serial.printf("  class      = %s\n", localAudioClass.c_str());
+  Serial.println("  Nilai uji, bukan hasil inferensi di perangkat.");
+  Serial.println("  Tekan SOS: seharusnya LOCAL_VERIFIED.");
+}
+
+/* Jalur SOS bersama untuk tombol fisik, tombol Wokwi, dan Serial 'S'.
+ *
+ * Sengaja dijadikan satu fungsi supaya ketiga jalur masuk benar-benar
+ * menjalankan verifikasi yang sama. Bila tombol punya salinan logikanya
+ * sendiri, pengujian lewat tombol tidak lagi membuktikan apa pun tentang
+ * perilaku tombol nyata. */
+void triggerSosPath(const char *sumber) {
+  Serial.printf("[SOS] BUTTON PRESSED (%s)\n", sumber);
+
+  /* Baca mikrofon saat tombol ditekan. Selama hardware belum ada, fungsi ini
+   * mengembalikan valid = false dan keyakinan tetap dari nilai uji. */
+  lastFeatures = readAudioFeatures();
+
+  const bool sebelumnya = sosPressed;
+  sosPressed = true;
+
+  /* SOS TIDAK melewati verifikasi audio. */
+  if (localAudioVerified()) {
+    Serial.printf("[LOCAL] VERIFIED (audio %.2f, kelas %s)\n",
+                  localAudioConfidence, localAudioClass.c_str());
+    sosLatched = true;
+    beginNewEvent();
+    activateLocalStrobe();
+    eventPending = true; /* dikirim di loop; strobe tidak menunggu HTTP */
+  } else {
+    Serial.printf("[LOCAL] REJECTED (audio %.2f, kelas %s). STROBE TETAP "
+                  "OFF.\n",
+                  localAudioConfidence, localAudioClass.c_str());
+    Serial.println("[LOCAL] SOS saja tidak cukup: verifikasi audio wajib "
+                   "dilewati juga.");
+  }
+
+  sosPressed = sebelumnya;
+}
+
+/* Membaca keempat tombol pengujian dengan debounce, tanpa delay(). */
+void handleTestButtons() {
+  const unsigned long sekarang = millis();
+
+  for (size_t i = 0; i < TEST_BUTTON_COUNT; i++) {
+    TestButton &tombol = testButtons[i];
+    const int reading = digitalRead(tombol.pin);
+
+    if (reading != tombol.lastReading) {
+      tombol.lastReading = reading;
+      tombol.lastChangeMs = sekarang;
+      continue;
+    }
+
+    if (sekarang - tombol.lastChangeMs < BUTTON_DEBOUNCE_MS) {
+      continue; /* masih dalam masa debounce */
+    }
+
+    const bool ditekan = (reading == LOW); /* ke GND + pull-up */
+
+    if (ditekan && !tombol.pressed) {
+      tombol.pressed = true;
+
+      switch (tombol.pin) {
+        case PIN_BTN_AUDIO_NORMAL:
+          simulateAudioNormal();
+          break;
+
+        case PIN_BTN_AUDIO_DISTRESS:
+          simulateAudioDistress();
+          break;
+
+        case PIN_BTN_POLL_SERVER:
+          Serial.println("[POLL] Mengambil command dari server ...");
+          if (WiFi.status() != WL_CONNECTED) {
+            /* Tidak ada jaringan. Strobe TIDAK disentuh: fail-safe lokal
+             * tidak berakhir hanya karena server tidak terjangkau. */
+            Serial.println("[POLL] Tidak ada jaringan; command tidak dapat "
+                           "diambil.");
+            handleNetworkFailure();
+          } else {
+            pollServerCommand();
+          }
+          break;
+
+        case PIN_BTN_RESET:
+          /* resetEmergency() TIDAK mengubah eventCounter, jadi kejadian
+           * berikutnya tetap mendapat nomor urut baru. */
+          Serial.println("[RESET] Tombol RESET ditekan.");
+          resetEmergency();
+          break;
+
+        default:
+          break;
+      }
+    } else if (!ditekan && tombol.pressed) {
+      tombol.pressed = false;
+    }
+  }
+}
+
+/* =====================================================================
+ * SERIAL TEST MODE
+ * =====================================================================
+ * Memungkinkan pengujian seluruh arsitektur tanpa mikrofon dan tanpa tombol.
+ *
+ *   A <nilai>  set keyakinan audio, contoh: A 0.90
+ *   K <kelas>  set kelas audio, contoh: K SCREAM
+ *   S          simulasi tombol SOS ditekan
+ *   T          trigger emergency test (audio 0.90 + kelas SCREAM + SOS)
+ *   R          reset ke READY
+ *   C          cek server (polling command sekarang)
+ *   H          kirim heartbeat sekarang
+ *   G          daftar ulang device (register)
+ *   ?          tampilkan status dan daftar perintah
+ */
+static void printStatus() {
+  const char *namaState[] = {"BOOT", "READY", "LOCAL_EMERGENCY",
+                             "SERVER_CONFIRMED"};
+  Serial.println(F("---------------- STATUS ----------------"));
+  Serial.printf("device_id            : %s\n", DEVICE_ID);
+  Serial.printf("firmware             : %s\n", FIRMWARE_VERSION);
+  Serial.printf("state                : %s\n", namaState[deviceState]);
+  Serial.printf("wifi                 : %s\n",
+                WiFi.status() == WL_CONNECTED ? "CONNECTED" : "DISCONNECTED");
+  Serial.printf("registered           : %s\n", deviceRegistered ? "ya" : "belum");
+  Serial.printf("localEmergencyActive : %s\n",
+                localEmergencyActive ? "true" : "false");
+  Serial.printf("serverConfirmed      : %s\n", serverConfirmed ? "true" : "false");
+  Serial.printf("strobe / siren       : %s / %s\n", strobeOn ? "ON" : "OFF",
+                sirenOn ? "ON" : "OFF");
+  Serial.printf("audio confidence     : %.2f (PLACEHOLDER, bukan hasil model)\n",
+                localAudioConfidence);
+  Serial.printf("audio class          : %s\n", localAudioClass.c_str());
+  Serial.printf("mikrofon terpasang   : %s\n", lastFeatures.valid ? "ya" : "belum");
+  Serial.printf("incident aktif       : %s\n",
+                activeIncidentId.length() ? activeIncidentId.c_str() : "-");
+  Serial.printf("event_id kejadian    : %s\n",
+                currentEventId.length() ? currentEventId.c_str() : "-");
+  Serial.println(F("Perintah: A <nilai> | K <kelas> | S | T | R | C | H | G | ?"));
+  Serial.println(F("----------------------------------------"));
+}
+
+void handleSerialCommands() {
+  if (!Serial.available()) {
+    return;
+  }
+
+  String baris = Serial.readStringUntil('\n');
+  baris.trim();
+  if (baris.length() == 0) {
+    return;
+  }
+
+  const char perintah = toupper(baris.charAt(0));
+  String argumen = baris.substring(1);
+  argumen.trim();
+
+  switch (perintah) {
+    case 'A': {
+      const float nilai = argumen.toFloat();
+      if (nilai < 0.0f || nilai > 1.0f) {
+        Serial.println("[TEST] Nilai harus 0.0 - 1.0, contoh: A 0.90");
+        break;
+      }
+      localAudioConfidence = nilai;
+      Serial.printf("[TEST] localAudioConfidence = %.2f (PLACEHOLDER)\n", nilai);
+      break;
+    }
+
+    case 'K': {
+      if (argumen.length() == 0) {
+        Serial.println("[TEST] Contoh: K SCREAM");
+        break;
+      }
+      localAudioClass = argumen;
+      Serial.printf("[TEST] localAudioClass = %s (relevan: %s)\n",
+                    localAudioClass.c_str(),
+                    isEmergencyAudioClass(localAudioClass) ? "ya" : "tidak");
+      break;
+    }
+
+    case 'S': {
+      Serial.println("[TEST] Simulasi tombol SOS.");
+      /* Jalur yang sama dengan tombol fisik dan tombol Wokwi, termasuk
+       * verifikasi audio. */
+      triggerSosPath("serial");
+      break;
+    }
+
+    case 'T': {
+      Serial.println("[TEST] Trigger emergency test: audio 0.90, kelas SCREAM.");
+
+
+
+
+
+
+
+
+
+
+
+      /* Sama dengan menekan DISTRESS AUDIO lalu SOS. Memakai jalur bersama
+       * supaya keputusan verifikasi tidak punya salinan kedua. */
+      simulateAudioDistress();
+      triggerSosPath("serial T");
+      break;
+    }
+
+    case 'R':
+      Serial.println("[TEST] Reset manual.");
+      resetEmergency();
+      break;
+
+    case 'C':
+      Serial.println("[TEST] Cek server sekarang.");
+      pollServerCommand();
+      break;
+
+    case 'H':
+      Serial.println("[TEST] Heartbeat sekarang.");
+      sendHeartbeat();
+      break;
+
+    case 'G':
+      Serial.println("[TEST] Register ulang.");
+      registerDevice();
+      break;
+
+    case '?':
+      printStatus();
+      break;
+
+    default:
+      Serial.printf("[TEST] Perintah '%c' tidak dikenal. Tekan ? untuk "
+                    "bantuan.\n",
+                    perintah);
+      break;
+  }
+}
+
+/* =====================================================================
+ * OUTPUT NON-BLOCKING
+ * =====================================================================
+ * Pola kedip strobe dan nyala-mati sirene dijalankan dengan millis(),
+ * tanpa delay(), supaya tombol dan polling tetap responsif.
+ */
+void updateOutputs() {
+  const unsigned long sekarang = millis();
+
+  /* Strobe berkedip selama keadaan darurat lokal masih aktif. */
+  if (localEmergencyActive) {
+    if (sekarang - lastStrobeToggleMs >= STROBE_BLINK_MS) {
+      lastStrobeToggleMs = sekarang;
+      setStrobe(!strobeOn);
+    }
+  }
+
+  /* Sirene hanya berpola bila server sudah CONFIRMED. */
+  if (serverConfirmed) {
+    const unsigned long durasi = sirenOn ? SIREN_BEEP_ON_MS : SIREN_BEEP_OFF_MS;
+    if (sekarang - lastSirenToggleMs >= durasi) {
+      lastSirenToggleMs = sekarang;
+      setSiren(!sirenOn);
+    }
+  }
+}
+
+/* =====================================================================
+ * SETUP
+ * ===================================================================== */
+void setup() {
+  Serial.begin(115200);
+  delay(300); /* memberi waktu USB-Serial siap sebelum mencetak */
+
+  Serial.println();
+  Serial.println(F("===================================================="));
+  Serial.println(F("  ASEP-JAGA - Firmware ESP32-S3"));
+  Serial.printf("  Versi   : %s\n", FIRMWARE_VERSION);
+  Serial.printf("  Device  : %s\n", DEVICE_ID);
+  Serial.printf("  Server  : %s\n", SERVER_BASE_URL);
+  Serial.println(F("===================================================="));
+  Serial.println(F("  CATATAN: mikrofon dan speaker belum terpasang."));
+  Serial.println(F("  Keyakinan audio diisi lewat Serial (A 0.90),"));
+  Serial.println(F("  BUKAN hasil inferensi di perangkat."));
+  Serial.println(F("  Tekan ? untuk daftar perintah pengujian."));
+  Serial.println(F("===================================================="));
+
+  /* Aktuator diinisialisasi OFF lebih dulu, sebelum apa pun yang lain,
+   * supaya sirene tidak sempat berbunyi saat boot. */
+  pinMode(PIN_STROBE, OUTPUT);
+  pinMode(PIN_SIREN, OUTPUT);
+  pinMode(PIN_SPEAKER, OUTPUT);
+  pinMode(PIN_STATUS_LED, OUTPUT);
+  setStrobe(false);
+  setSiren(false);
+  setSpeaker(false);
+  digitalWrite(PIN_STATUS_LED, LOW);
+
+  /* bootId dibuat sekali per boot dan menjadi bagian dari setiap event_id.
+   * Lihat penjelasan di blok deklarasi: tanpa ini, event_id dapat terulang
+   * setelah reboot dan emergency nyata berisiko dianggap duplicate. */
+  bootId = esp_random();
+  Serial.printf("[BOOT] bootId = %08x (pembeda event_id antar sesi boot)\n",
+                bootId);
+
+  /* Tombol SOS ke GND, memakai pull-up internal. */
+  pinMode(PIN_SOS_BUTTON, INPUT_PULLUP);
+  lastButtonReading = digitalRead(PIN_SOS_BUTTON);
+  lastButtonChangeMs = millis();
+
+  /* Tombol pengujian (WOKWI SIMULATION PINS). Tidak dipasang di perangkat
+   * sungguhan; tanpa tombol, pull-up internal membuat pin terbaca HIGH
+   * sehingga tidak pernah terpicu. */
+  for (size_t i = 0; i < TEST_BUTTON_COUNT; i++) {
+    pinMode(testButtons[i].pin, INPUT_PULLUP);
+    testButtons[i].lastReading = digitalRead(testButtons[i].pin);
+    testButtons[i].lastChangeMs = millis();
+    testButtons[i].pressed = false;
+  }
+
+  /* WiFi dicoba sekali di sini. Bila gagal, setup() TIDAK berhenti:
+   * perangkat masuk LOCAL MODE dan tetap dapat menyalakan strobe. */
+  connectWiFi();
+
+  if (wifiConnected) {
+    registerDevice();
+  } else {
+    Serial.println("[BOOT] Tanpa jaringan; registrasi ditunda sampai WiFi "
+                   "tersambung.");
+  }
+
+  deviceState = STATE_READY;
+  Serial.println("[BOOT] READY.");
+}
+
+/* =====================================================================
+ * LOOP
+ * =====================================================================
+ * Tidak ada delay() di sini. Setiap pekerjaan berkala memakai millis(),
+ * sehingga tombol SOS selalu terbaca dalam waktu singkat.
+ */
+void loop() {
+  const unsigned long sekarang = millis();
+
+  /* 1. Tombol dan Serial diperiksa lebih dulu: keduanya jalur masuk
+   *    kejadian darurat, jadi tidak boleh tertunda oleh pekerjaan jaringan. */
+  handleSos();
+  handleTestButtons();
+  handleSerialCommands();
+
+  /* 2. Pola strobe dan sirene. */
+  updateOutputs();
+
+  /* 3. Sambung ulang WiFi bila terputus. Tidak blocking: satu percobaan
+   *    per WIFI_RETRY_INTERVAL_MS. */
+  if (WiFi.status() != WL_CONNECTED) {
+    if (wifiConnected) {
+      /* Baru saja terputus. */
+      wifiConnected = false;
+      digitalWrite(PIN_STATUS_LED, LOW);
+      Serial.println("[WIFI] Koneksi terputus -> LOCAL MODE.");
+      handleNetworkFailure();
+    }
+    if (sekarang - lastWifiRetryMs >= WIFI_RETRY_INTERVAL_MS) {
+      lastWifiRetryMs = sekarang;
+      Serial.println("[WIFI] Mencoba menyambung ulang ...");
+      WiFi.disconnect();
+      WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    }
+    return; /* pekerjaan jaringan lain dilewati sampai tersambung */
+  }
+
+  /* Baru tersambung kembali. */
+  if (!wifiConnected) {
+    wifiConnected = true;
+    digitalWrite(PIN_STATUS_LED, HIGH);
+    Serial.print("[WIFI] Tersambung kembali, IP: ");
+    Serial.println(WiFi.localIP());
+  }
+
+  /* 4. Registrasi. Heartbeat akan ditolak 404 bila device belum terdaftar,
+   *    jadi registrasi harus tuntas lebih dulu. */
+  if (!deviceRegistered) {
+    if (sekarang - lastRegisterTryMs >= REGISTER_RETRY_INTERVAL_MS) {
+      registerDevice();
+    }
+    return;
+  }
+
+  /* 5. Kirim emergency yang tertunda.
+   *    eventPending menjaga kejadian tetap terkirim setelah jaringan pulih,
+   *    tanpa mengirim ulang kejadian yang sudah berhasil. */
+  if (eventPending && sekarang - lastEventRetryMs >= EVENT_RETRY_INTERVAL_MS) {
+    sendEmergencyEvent();
+  }
+
+  /* 6. Heartbeat berkala. */
+  if (sekarang - lastHeartbeatMs >= HEARTBEAT_INTERVAL_MS) {
+    sendHeartbeat();
+  }
+
+  /* 7. Polling command. Lebih sering saat kejadian sedang berlangsung,
+   *    supaya sirene tidak terlambat menyala. */
+  const unsigned long jedaPoll =
+      localEmergencyActive ? COMMAND_POLL_INTERVAL_MS : COMMAND_POLL_IDLE_MS;
+  if (sekarang - lastCommandPollMs >= jedaPoll) {
+    pollServerCommand();
+  }
+}

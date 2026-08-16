@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+
+{% block title %}History — ASEP-JAGA{% endblock %}
+
+{% block content %}
+<h1 class="page-title">History</h1>
+<p class="page-subtitle">Incident yang sudah selesai (CLOSED atau FALSE_ALARM) dan log sistem.</p>
+
+<div class="panel">
+  <div class="panel-head">
+    <h2>Riwayat Incident</h2>
+    <div class="btn-row">
+      <select id="filterDevice">
+        <option value="">Semua device</option>
+      </select>
+      <select id="filterDecision">
+        <option value="">Semua keputusan</option>
+        <option value="CONFIRMED">CONFIRMED</option>
+        <option value="FALSE_ALARM">FALSE_ALARM</option>
+      </select>
+      <button class="btn btn-sm" id="btnRefresh">Segarkan</button>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Incident ID</th>
+          <th>Device</th>
+          <th>Location</th>
+          <th>Waktu Kejadian</th>
+          <th>Selesai</th>
+          <th>Audio</th>
+          <th>Local</th>
+          <th>Server</th>
+          <th>Skor</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="historyBody">
+        <tr><td colspan="11" class="empty">Memuat…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h2>Log Sistem</h2>
+    <span class="muted" id="logCount"></span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Waktu</th>
+          <th>Device</th>
+          <th>Event</th>
+          <th>Pesan</th>
+        </tr>
+      </thead>
+      <tbody id="logBody">
+        <tr><td colspan="4" class="empty">Memuat…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/history.js') }}"></script>
+{% endblock %}

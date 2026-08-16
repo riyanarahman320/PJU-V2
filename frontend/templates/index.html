@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+
+{% block title %}ASEP-JAGA{% endblock %}
+
+{% block content %}
+<div class="hero">
+  <h1>ASEP<span>-JAGA</span></h1>
+  <p>
+    Sistem emergency pada infrastruktur Penerangan Jalan Umum (PJU) berbasis
+    ESP32-S3 dengan verifikasi dua tahap: verifikasi lokal di perangkat dan
+    verifikasi kedua di server.
+  </p>
+  <div class="btn-row" style="justify-content:center">
+    <a class="btn btn-primary" href="/dashboard">Buka Command Center</a>
+    <a class="btn" href="/api/health">Cek Status API</a>
+  </div>
+</div>
+
+<div class="grid grid-2">
+  <div class="panel">
+    <div class="panel-head"><h2>Alur Sistem</h2></div>
+    <div class="panel-body">
+<div class="flow-diagram">USER
+  |
+  v
+SOS BUTTON + MICROPHONE
+  |
+  v
+ESP32-S3  ->  LOCAL AUDIO AI  ->  LOCAL VERIFICATION
+  |
+  +-- TIDAK VALID --> STOP
+  |
+  +-- VALID --------> STROBE ON  (langsung, tanpa server)
+                          |
+                          v
+                    KIRIM DATA KE SERVER
+                          |
+                          v
+                    CONTEXT PROCESSING
+                          |
+                          v
+                    VERIFIKASI TAHAP 2
+                          |
+            +-------------+-------------+
+            |                           |
+       FALSE ALARM                  CONFIRMED
+            |                           |
+          STOP                       COMMAND
+                                        |
+                                        v
+                                     ESP32
+                                        |
+                                        v
+                              SIREN + SPEAKER</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><h2>Status Implementasi</h2></div>
+    <div class="panel-body">
+      <p class="muted" style="margin-top:0">
+        Bagian yang sudah berfungsi pada tahap ini:
+      </p>
+      <ul class="muted" style="line-height:1.9">
+        <li>REST API Flask + database SQLite</li>
+        <li>Registrasi perangkat dan heartbeat</li>
+        <li>Verifikasi tahap 2 (<strong>rule-based</strong>, bukan AI)</li>
+        <li>Pengelolaan incident dan command</li>
+        <li>Dashboard, peta, dan riwayat</li>
+        <li>Simulator perangkat</li>
+      </ul>
+      <div class="notice">
+        <strong>Catatan jujur.</strong> Verifikasi tahap 2 saat ini memakai
+        aturan berbobot tetap yang ditulis manual, belum model AI. Data
+        hotspot, cuaca, dan lalu lintas masih <em>mock</em> yang dihasilkan
+        secara lokal. Modul AI Python akan diintegrasikan pada tahap
+        berikutnya melalui <span class="mono">register_ai_verifier()</span>.
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

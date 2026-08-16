@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Environment / credentials
+.env
+
+# Secret firmware ESP32 (WiFi + DEVICE_API_KEY).
+# Template yang aman di-commit: esp32/include/secrets.h.example
+esp32/include/secrets.h
+
+# Database (mudah direset untuk development)
+backend/data/*.db
+backend/data/*.sqlite
+backend/data/*.sqlite3
+
+# Testing
+.pytest_cache/
+.coverage
+
+# PlatformIO
+esp32/.pio/
+esp32/.vscode/
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

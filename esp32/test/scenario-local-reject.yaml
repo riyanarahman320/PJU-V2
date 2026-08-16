@@ -1,0 +1,47 @@
+# SKENARIO 1 - LOCAL REJECT
+#
+# Membuktikan aturan keselamatan inti: SOS TIDAK PERNAH melewati verifikasi
+# audio. Tombol yang tertekan tidak sengaja tidak boleh menyalakan apa pun.
+#
+# Tidak memerlukan server. Dijalankan sepenuhnya offline.
+#
+# Teks yang ditunggu di bawah adalah keluaran NYATA firmware
+# (esp32/src/main.cpp), bukan format yang diinginkan/dikarang.
+
+name: 'ASEP-JAGA - Local Reject (SOS tanpa bukti audio)'
+version: 1
+author: 'ASEP-JAGA'
+
+steps:
+  # Boot sampai READY. WiFi Wokwi-GUEST tersambung, tetapi server tidak
+  # terjangkau; itu tidak menghalangi jalur verifikasi lokal.
+  - wait-serial: '[BOOT] READY.'
+
+  # Audio confidence rendah.
+  - write-serial: "A 0.20\n"
+  - wait-serial: '[TEST] localAudioConfidence = 0.20 (PLACEHOLDER)'
+
+  # Kelas audio tidak relevan.
+  - write-serial: "K Normal\n"
+  - wait-serial: '[TEST] localAudioClass = Normal (relevan: tidak)'
+
+  # Tekan SOS.
+  - write-serial: "S\n"
+  - wait-serial: '[SOS] BUTTON PRESSED (serial)'
+  - wait-serial: '[LOCAL] REJECTED (audio 0.20, kelas Normal). STROBE TETAP OFF.'
+
+  # Baris kedua memastikan alasannya tercatat, bukan hanya keputusannya.
+  - wait-serial: '[LOCAL] SOS saja tidak cukup: verifikasi audio wajib dilewati juga.'
+
+  # CATATAN tentang expect-pin:
+  # Wokwi menyediakan langkah `expect-pin` untuk memeriksa GPIO secara
+  # langsung, yang lebih kuat daripada memeriksa teks. Langkah itu TIDAK
+  # dipakai di sini karena dokumentasi Wokwi masih tidak konsisten soal nama
+  # parameternya (tabel menyebut `value`, contohnya memakai `expected`), dan
+  # hal itu belum dapat diverifikasi tanpa menjalankan CLI. Menebak nama
+  # parameter hanya akan membuat skenario gagal karena salah sintaksis,
+  # bukan karena firmware salah.
+  #
+  # Untuk sekarang bukti "STROBE TETAP OFF" diambil dari keluaran serial di
+  # atas. Pada simulasi interaktif, LED STROBE di diagram dapat dilihat
+  # langsung tetap gelap.

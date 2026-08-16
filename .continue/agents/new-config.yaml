@@ -1,0 +1,14 @@
+name: Tabitoken Claude
+version: 0.0.1
+schema: v1
+
+models:
+  - name: claude-opus-5-thinking
+    provider: openai
+    model: claude-opus-5-thinking
+    apiBase: https://tabitoken.com/v1
+    apiKey: sk-4JE6fSJIMs2yQIFwjrLh4NjZZQv8LHQOrDpWHvEfkvxCJi1k
+    roles:
+      - chat
+      - edit
+      - apply
