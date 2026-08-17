@@ -867,3 +867,4 @@ Nilai ini **tidak pernah** diisi angka perkiraan oleh server. Dua alasannya:
 Menyamakan keduanya akan menurunkan skor dan berpotensi menolak kejadian nyata.
 Selain itu pipeline tidak memakai scaler, jadi satuan yang berbeda dari dataset
 training akan menggeser prediksi tanpa terdeteksi sebagai kesalahan.
+merdeka jam 6.45
