@@ -57,12 +57,52 @@ function configCell(device) {
   return bagian.join('');
 }
 
+/* Keadaan sensor tamper sebuah device.
+
+   Dua hal ditampilkan terpisah dan itu disengaja:
+
+     tamper        -> kotak SEDANG terbuka (perlu tindakan sekarang)
+     ever_tampered -> kotak PERNAH dibuka (jejak, walau sudah ditutup)
+
+   Menutup kotak kembali tidak menghapus fakta bahwa ia pernah dibuka, jadi
+   penanda kedua tetap muncul. Tanpa itu, pelaku yang membuka lalu menutup
+   kotak akan hilang dari pandangan operator. */
+function tamperCell(device) {
+  const state = device.tamper_state || {};
+
+  if (state.tamper) {
+    const bagian = [
+      '<div><span class="badge badge-danger">KOTAK TERBUKA</span></div>',
+    ];
+    if (state.tamper_since) {
+      bagian.push(
+        '<div class="muted" style="font-size:11px">sejak ' +
+        timeAgo(state.tamper_since) + '</div>'
+      );
+    }
+    return bagian.join('');
+  }
+
+  if (state.ever_tampered) {
+    return (
+      '<div><span class="badge badge-warn">PERNAH DIBONGKAR</span></div>' +
+      '<div class="muted" style="font-size:11px">laporan terakhir ' +
+      timeAgo(state.tamper_last_report) + '</div>'
+    );
+  }
+
+  // Belum pernah ada laporan sama sekali. Ini TIDAK sama dengan "aman":
+  // firmware lama tidak mengirim field tamper, jadi keadaannya tidak
+  // diketahui, bukan terbukti utuh.
+  return '<span class="muted">tidak ada laporan</span>';
+}
+
 function renderDevices(devices, incidentByDevice) {
   const body = document.getElementById('deviceBody');
 
   if (devices.length === 0) {
     body.innerHTML =
-      '<tr><td colspan="10" class="empty">Belum ada perangkat terdaftar. ' +
+      '<tr><td colspan="11" class="empty">Belum ada perangkat terdaftar. ' +
       'Jalankan <span class="mono">simulation/simulator.py</span> atau ESP32 untuk mendaftar.</td></tr>';
     return;
   }
@@ -90,6 +130,7 @@ function renderDevices(devices, incidentByDevice) {
         '<td class="nowrap">' + timeAgo(device.last_seen) +
           '<div class="muted" style="font-size:11px">' + formatTime(device.last_seen) + '</div></td>' +
         '<td class="mono">' + escapeHtml(device.firmware_version) + '</td>' +
+        '<td>' + tamperCell(device) + '</td>' +
         '<td>' + configCell(device) + '</td>' +
         '<td>' + incidentCell + '</td>' +
         '<td class="nowrap">' +

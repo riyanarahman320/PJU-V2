@@ -29,6 +29,53 @@
 #define PIN_STATUS_LED 15 /* indikator status jaringan                     */
 
 /* =====================================================================
+ * SENSOR TAMPER - HARDWARE NYATA, BUKAN PIN SIMULASI
+ * =====================================================================
+ * Saklar tamper dipasang di dalam kotak perangkat. Saat tutup kotak dibuka
+ * paksa, saklar berubah keadaan dan perangkat melaporkannya ke server.
+ *
+ * GPIO 8 dahulu dipakai tombol simulasi NORMAL AUDIO. Pin ini sekarang
+ * menjadi sensor sungguhan, jadi ia TIDAK lagi berada di blok WOKWI
+ * SIMULATION PINS di bawah: pin ini HARUS terpasang di perangkat nyata.
+ *
+ * NORMALLY-CLOSED vs NORMALLY-OPEN (keputusan penting)
+ * ---------------------------------------------------
+ * Pakailah saklar NORMALLY-CLOSED (NC) yang tertekan oleh tutup kotak:
+ *
+ *   tutup terpasang -> saklar tertekan -> rangkaian TERTUTUP ke GND -> LOW
+ *   tutup dibuka    -> saklar lepas    -> rangkaian TERBUKA         -> HIGH
+ *                                          (pull-up internal menarik HIGH)
+ *
+ * Dengan susunan ini, KABEL YANG DIPOTONG juga terbaca HIGH, sehingga
+ * dianggap tamper. Bila memakai saklar normally-open, memotong kabel membuat
+ * sensor diam selamanya dan pembongkaran tidak akan pernah terdeteksi -
+ * kegagalan yang tepat menguntungkan pelaku.
+ *
+ * TAMPER_ACTIVE_STATE menyatakan level yang berarti "kotak dibuka".
+ *   NC (disarankan)            -> HIGH
+ *   NO (mis. pushbutton Wokwi) -> LOW
+ *
+ * Di Wokwi, wokwi-pushbutton adalah saklar momentary normally-open ke GND,
+ * jadi simulasi memakai LOW. Perbedaan ini HANYA soal level; logika latch di
+ * firmware sama untuk keduanya.
+ */
+#define PIN_TAMPER 8
+
+/* TAMPER_ACTIVE_STATE didefinisikan SETELAH blok WOKWI_BUILD di bawah,
+ * karena nilainya bergantung pada mode build. Menaruhnya di sini akan
+ * membacanya sebelum WOKWI_BUILD ada, dan mode Wokwi akan memakai level
+ * yang salah tanpa error apa pun. */
+
+/* Debounce tamper dibuat jauh lebih panjang daripada tombol biasa. Saklar
+ * mekanis di dalam kotak yang terkena angin atau getaran kendaraan dapat
+ * memantul beberapa kali; laporan palsu ke server harus dihindari. */
+#define TAMPER_DEBOUNCE_MS 300UL
+
+/* Selama tamper masih aktif, laporan diulang berkala sebagai pengingat, dan
+ * supaya server yang sempat kehilangan laporan pertama tetap mengetahuinya. */
+#define TAMPER_REPEAT_MS 60000UL
+
+/* =====================================================================
  * TOMBOL PENGUJIAN - WOKWI SIMULATION PINS
  * =====================================================================
  * Empat tombol di bawah HANYA untuk simulasi/pengujian. Tombol ini
@@ -47,8 +94,11 @@
  * bawaan board (38).
  *
  * Semua tombol dipasang ke GND dengan INPUT_PULLUP: LOW berarti ditekan.
+ *
+ * CATATAN: tombol NORMAL AUDIO sudah TIDAK ADA. GPIO 8 kini dipakai sensor
+ * tamper (lihat blok di atas). Untuk menguji jalur LOCAL_REJECTED, pakai
+ * perintah Serial 'A 0.20' lalu tekan SOS.
  */
-#define PIN_BTN_AUDIO_NORMAL 8    /* WOKWI SIMULATION PIN: audio normal   */
 #define PIN_BTN_AUDIO_DISTRESS 9  /* WOKWI SIMULATION PIN: audio distress */
 #define PIN_BTN_POLL_SERVER 10    /* WOKWI SIMULATION PIN: poll command   */
 #define PIN_BTN_RESET 11          /* WOKWI SIMULATION PIN: reset          */
@@ -88,6 +138,18 @@
  */
 #ifndef WOKWI_BUILD
 #define WOKWI_BUILD 1
+#endif
+
+/* Level tamper yang berarti "kotak dibuka". Bergantung pada jenis saklar,
+ * jadi harus berada SETELAH WOKWI_BUILD diketahui (lihat PIN_TAMPER).
+ *
+ * Wokwi memakai pushbutton normally-open ke GND -> ditekan = LOW.
+ * Lapangan memakai saklar normally-closed        -> terbuka = HIGH,
+ * sehingga kabel yang dipotong pun terbaca sebagai tamper. */
+#if WOKWI_BUILD
+#define TAMPER_ACTIVE_STATE LOW
+#else
+#define TAMPER_ACTIVE_STATE HIGH
 #endif
 
 /* Mikrofon: pin I2S disiapkan tetapi BELUM dipakai.

@@ -19,10 +19,10 @@
     },
     {
       "type": "wokwi-pushbutton",
-      "id": "btnNormal",
-      "top": 20,
-      "left": -180,
-      "attrs": { "color": "green", "label": "NORMAL AUDIO", "bounce": "1" }
+      "id": "btnTamper",
+      "top": 25.4,
+      "left": -182.4,
+      "attrs": { "color": "cyan", "label": "TAMPER", "bounce": "1" }
     },
     {
       "type": "wokwi-pushbutton",
@@ -41,9 +41,9 @@
     {
       "type": "wokwi-pushbutton",
       "id": "btnReset",
-      "top": 290,
-      "left": -180,
-      "attrs": { "color": "white", "label": "RESET", "bounce": "1" }
+      "top": 294.2,
+      "left": -182.4,
+      "attrs": { "color": "magenta", "label": "RESET", "bounce": "1" }
     },
     {
       "type": "wokwi-led",
@@ -55,7 +55,7 @@
     {
       "type": "wokwi-resistor",
       "id": "rStrobe",
-      "top": 99.95,
+      "top": 80.75,
       "left": 115.2,
       "attrs": { "value": "330" }
     },
@@ -76,7 +76,7 @@
     {
       "type": "wokwi-resistor",
       "id": "rSpeaker",
-      "top": 186.35,
+      "top": 167.15,
       "left": 115.2,
       "attrs": { "value": "330" }
     },
@@ -90,7 +90,7 @@
     {
       "type": "wokwi-resistor",
       "id": "rStatus",
-      "top": 282.35,
+      "top": 243.95,
       "left": 115.2,
       "attrs": { "value": "330" }
     }
@@ -98,27 +98,27 @@
   "connections": [
     [ "esp:TX", "$serialMonitor:RX", "", [] ],
     [ "esp:RX", "$serialMonitor:TX", "", [] ],
-    [ "esp:5", "rStrobe:1", "yellow", [ "h-24.28", "v-67.38", "h124.8", "v65.65" ] ],
+    [ "esp:5", "rStrobe:1", "yellow", [ "h-24.28", "v-67.38", "h120.23", "v105.78" ] ],
     [ "rStrobe:2", "ledStrobe:A", "yellow", [ "h37.2", "v-28.8" ] ],
     [ "esp:6", "buzzSiren:1", "red", [ "h-14.68", "v-86.58" ] ],
-    [ "buzzSiren:2", "esp:GND.2", "black", [ "h-0.4", "v38.4" ] ],
-    [ "esp:7", "rSpeaker:1", "blue", [ "h-19.25", "v192", "h144" ] ],
+    [ "esp:7", "rSpeaker:1", "blue", [ "h-19.25", "v182.4", "h115.2", "v-96" ] ],
     [ "rSpeaker:2", "ledSpeaker:A", "blue", [ "h37.2", "v-28.8" ] ],
-    [ "esp:15", "rStatus:1", "green", [ "h-14.68", "v269.47" ] ],
+    [ "esp:15", "rStatus:1", "green", [ "h-14.68", "v182.4", "h120.23" ] ],
     [ "rStatus:2", "ledStatus:A", "green", [ "h37.2", "v-48" ] ],
     [ "btnSos:1.r", "esp:4", "green", [ "v-0.2", "h113", "v124.98" ] ],
-    [ "btnNormal:1.r", "esp:8", "green", [ "v5.4", "h93.8", "v96" ] ],
+    [ "btnTamper:1.r", "esp:8", "cyan", [ "h93.8", "v96" ] ],
     [ "btnDistress:1.r", "esp:9", "yellow", [ "v1.8", "h84.2", "v38.4" ] ],
     [ "btnPoll:1.r", "esp:10", "blue", [ "v-1.8", "h84.2", "v-38.4" ] ],
-    [ "btnReset:1.r", "esp:11", "white", [ "v-5.4", "h93.8", "v-115.2" ] ],
+    [ "btnReset:1.r", "esp:11", "magenta", [ "h93.8", "v-124.8" ] ],
     [ "esp:GND.1", "btnReset:2.r", "black", [ "h-24.28", "v86.22" ] ],
     [ "btnReset:2.r", "btnPoll:2.r", "black", [ "h7.4", "v-91.6" ] ],
     [ "btnPoll:2.r", "btnDistress:2.r", "black", [ "h7.4", "v-97.6" ] ],
-    [ "btnDistress:2.r", "btnNormal:2.r", "black", [ "h7.4", "v-94" ] ],
-    [ "btnNormal:2.r", "btnSos:2.r", "black", [ "h7.4", "v-100" ] ],
-    [ "buzzSiren:2", "ledStrobe:C", "black", [ "v0" ] ],
+    [ "btnDistress:2.r", "btnTamper:2.r", "black", [ "h7.4", "v-94" ] ],
+    [ "btnTamper:2.r", "btnSos:2.r", "black", [ "h7.4", "v-100" ] ],
+    [ "buzzSiren:2", "ledStrobe:C", "black", [ "h28.4", "v86.4" ] ],
     [ "ledStrobe:C", "ledSpeaker:C", "black", [ "v0", "h-9.2", "v86.4" ] ],
-    [ "ledSpeaker:C", "ledStatus:C", "black", [ "v0", "h-9.2", "v76.8" ] ]
+    [ "ledSpeaker:C", "ledStatus:C", "black", [ "v0", "h-9.2", "v76.8" ] ],
+    [ "esp:GND.4", "ledStatus:C", "black", [ "h19.2", "v9.6" ] ]
   ],
   "dependencies": {}
 }

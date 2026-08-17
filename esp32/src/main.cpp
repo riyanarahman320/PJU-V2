@@ -134,8 +134,9 @@ struct TestButton {
   bool pressed;
 };
 
+/* NORMAL AUDIO sudah tidak ada di sini: GPIO 8 kini sensor tamper.
+ * Untuk menguji LOCAL_REJECTED, pakai Serial 'A 0.20' lalu tekan SOS. */
 static TestButton testButtons[] = {
-    {PIN_BTN_AUDIO_NORMAL, HIGH, 0, false},
     {PIN_BTN_AUDIO_DISTRESS, HIGH, 0, false},
     {PIN_BTN_POLL_SERVER, HIGH, 0, false},
     {PIN_BTN_RESET, HIGH, 0, false},
@@ -173,8 +174,28 @@ static const size_t TEST_BUTTON_COUNT =
 static volatile bool sosIsrLatch = false;
 static volatile unsigned long sosIsrMs = 0;
 
-static volatile bool testIsrLatch[4] = {false, false, false, false};
-static volatile unsigned long testIsrMs[4] = {0, 0, 0, 0};
+static volatile bool testIsrLatch[3] = {false, false, false};
+static volatile unsigned long testIsrMs[3] = {0, 0, 0};
+
+/* =====================================================================
+ * SENSOR TAMPER
+ * =====================================================================
+ * Berbeda dari tombol: yang dipantau adalah PERUBAHAN KEADAAN, bukan
+ * penekanan. Karena itu interrupt dipasang pada CHANGE, dan yang disimpan
+ * adalah keadaan terakhir yang terbaca - bukan sekadar flag "pernah".
+ *
+ * tamperIsrLatch  : ada perubahan yang perlu diperiksa loop()
+ * tamperActive    : keadaan yang sudah dikonfirmasi setelah debounce
+ * tamperReported  : keadaan aktif tersebut sudah berhasil dilaporkan
+ *
+ * tamperActive TIDAK direset otomatis saat kotak ditutup kembali. Pelaku
+ * yang membuka lalu menutup kotak tetap tercatat, dan pemulihan dilaporkan
+ * sebagai peristiwa tersendiri. */
+static volatile bool tamperIsrLatch = false;
+static volatile unsigned long tamperIsrMs = 0;
+static bool tamperActive = false;
+static bool tamperReported = false;
+static unsigned long lastTamperReportMs = 0;
 
 /* Debounce dilakukan di dalam ISR: tepi turun yang datang lebih cepat dari
  * BUTTON_DEBOUNCE_MS dianggap pantulan kontak dan diabaikan. */
@@ -186,7 +207,7 @@ static void IRAM_ATTR isrSos() {
   }
 }
 
-static void IRAM_ATTR isrBtnNormal() {
+static void IRAM_ATTR isrBtnDistress() {
   const unsigned long sekarang = millis();
   if (sekarang - testIsrMs[0] >= BUTTON_DEBOUNCE_MS) {
     testIsrMs[0] = sekarang;
@@ -194,7 +215,7 @@ static void IRAM_ATTR isrBtnNormal() {
   }
 }
 
-static void IRAM_ATTR isrBtnDistress() {
+static void IRAM_ATTR isrBtnPoll() {
   const unsigned long sekarang = millis();
   if (sekarang - testIsrMs[1] >= BUTTON_DEBOUNCE_MS) {
     testIsrMs[1] = sekarang;
@@ -202,7 +223,7 @@ static void IRAM_ATTR isrBtnDistress() {
   }
 }
 
-static void IRAM_ATTR isrBtnPoll() {
+static void IRAM_ATTR isrBtnReset() {
   const unsigned long sekarang = millis();
   if (sekarang - testIsrMs[2] >= BUTTON_DEBOUNCE_MS) {
     testIsrMs[2] = sekarang;
@@ -210,12 +231,13 @@ static void IRAM_ATTR isrBtnPoll() {
   }
 }
 
-static void IRAM_ATTR isrBtnReset() {
-  const unsigned long sekarang = millis();
-  if (sekarang - testIsrMs[3] >= BUTTON_DEBOUNCE_MS) {
-    testIsrMs[3] = sekarang;
-    testIsrLatch[3] = true;
-  }
+/* Tamper memakai CHANGE, bukan FALLING: pembukaan DAN penutupan kembali
+ * keduanya perlu diketahui. Pembacaan pin dilakukan di loop() setelah
+ * debounce, bukan di dalam ISR, supaya pantulan kontak tidak menghasilkan
+ * laporan palsu. */
+static void IRAM_ATTR isrTamper() {
+  tamperIsrMs = millis();
+  tamperIsrLatch = true;
 }
 
 /* Penjadwalan non-blocking */
@@ -306,6 +328,8 @@ void resetEmergency();
 void handleNetworkFailure();
 void handleSerialCommands();
 void handleTestButtons();
+void handleTamper();
+void reportTamper(bool aktif);
 void triggerSosPath(const char *sumber);
 void updateOutputs();
 void acknowledgeCommand(long commandId);
@@ -502,6 +526,10 @@ void sendHeartbeat() {
   doc["network"] = true;
   doc["audio"] = lastFeatures.valid;
   doc["camera"] = false;
+  /* Keadaan tamper ikut dilaporkan di setiap heartbeat, bukan hanya saat
+   * berubah. Bila laporan POST /api/device/tamper sempat gagal, server tetap
+   * mengetahui keadaan sebenarnya dari heartbeat berikutnya. */
+  doc["tamper"] = tamperActive;
   doc["firmware_version"] = FIRMWARE_VERSION;
 
   String body;
@@ -1085,7 +1113,116 @@ void triggerSosPath(const char *sumber) {
   sosPressed = sebelumnya;
 }
 
-/* Membaca keempat tombol pengujian dengan debounce, tanpa delay(). */
+/* =====================================================================
+ * TAMPER: PELAPORAN KE SERVER
+ * =====================================================================
+ * MENGAPA BUKAN /api/emergency/evaluate
+ * -------------------------------------
+ * Tamper BUKAN keadaan darurat korban. Verifikasi tahap 2 di server memberi
+ * skor berdasarkan SOS dan bukti audio; pembongkaran kotak tidak memiliki
+ * keduanya, sehingga akan selalu jatuh menjadi FALSE_ALARM dan mengotori
+ * data incident dengan kejadian yang sebenarnya bukan false alarm.
+ *
+ * Tamper juga TIDAK menyalakan sirene atau strobe. Sirene hanya boleh
+ * dinyalakan oleh command server untuk kejadian darurat; menyalakannya
+ * karena tamper akan membuat pelaku tahu ia terdeteksi dan membuat warga
+ * salah paham bahwa ada korban.
+ *
+ * Yang dilakukan: laporan terpisah lewat POST /api/device/tamper, dicatat
+ * server sebagai peristiwa keamanan perangkat dan tampil di dashboard.
+ *
+ * Bila server tidak terjangkau, `tamperReported` tetap false sehingga
+ * laporan dicoba lagi pada siklus berikutnya. Pembongkaran tidak boleh
+ * hilang hanya karena jaringan sedang mati. */
+void reportTamper(bool aktif) {
+  if (WiFi.status() != WL_CONNECTED) {
+    return; /* dicoba lagi nanti; keadaan tetap tersimpan di tamperActive */
+  }
+
+  JsonDocument doc;
+  doc["device_id"] = DEVICE_ID;
+  doc["tamper"] = aktif;
+  doc["firmware_version"] = FIRMWARE_VERSION;
+
+  String body;
+  serializeJson(doc, body);
+
+  String response;
+  const int status = httpRequest("POST", "/api/device/tamper", body, response);
+
+  if (status == 200 || status == 201) {
+    tamperReported = true;
+    lastTamperReportMs = millis();
+    Serial.printf("[TAMPER] Laporan terkirim ke server (%s).\n",
+                  aktif ? "KOTAK DIBUKA" : "kotak kembali tertutup");
+    return;
+  }
+
+  if (status == 404) {
+    Serial.println(F("[TAMPER] HTTP 404: endpoint tamper tidak ada di "
+                     "server ini, atau device belum terdaftar."));
+    /* Tidak diulang terus-menerus bila endpoint memang tidak tersedia:
+     * tandai terlaporkan supaya Serial tidak dipenuhi pesan yang sama.
+     * Keadaan tamper tetap terlihat di Serial dan LED. */
+    tamperReported = true;
+    return;
+  }
+
+  Serial.printf("[TAMPER] Laporan gagal (HTTP %d), akan dicoba lagi.\n",
+                status);
+  handleNetworkFailure();
+}
+
+/* =====================================================================
+ * TAMPER: PEMBACAAN SENSOR
+ * =====================================================================
+ * Dipanggil setiap loop(). Tidak blocking, tidak memakai delay().
+ *
+ * Debounce dilakukan di sini (bukan di ISR) karena pembacaan pin harus
+ * dilakukan SETELAH kontak tenang. TAMPER_DEBOUNCE_MS jauh lebih panjang
+ * daripada tombol biasa: saklar di dalam kotak dapat terguncang angin atau
+ * getaran kendaraan, dan laporan palsu ke server harus dihindari. */
+void handleTamper() {
+  const unsigned long sekarang = millis();
+
+  if (tamperIsrLatch) {
+    /* Tunggu sampai kontak tenang sebelum membaca keadaan sebenarnya. */
+    if (sekarang - tamperIsrMs < TAMPER_DEBOUNCE_MS) {
+      return;
+    }
+
+    noInterrupts();
+    tamperIsrLatch = false;
+    interrupts();
+
+    const bool aktifSekarang =
+        (digitalRead(PIN_TAMPER) == TAMPER_ACTIVE_STATE);
+
+    if (aktifSekarang != tamperActive) {
+      tamperActive = aktifSekarang;
+      tamperReported = false; /* keadaan baru, perlu dilaporkan */
+
+      if (tamperActive) {
+        Serial.println(F("[TAMPER] KOTAK PERANGKAT DIBUKA. Melaporkan ke "
+                         "server."));
+      } else {
+        Serial.println(F("[TAMPER] Kotak kembali tertutup."));
+      }
+    }
+  }
+
+  /* Laporan pertama, atau ulangi berkala selama tamper masih aktif. */
+  if (!tamperReported) {
+    reportTamper(tamperActive);
+    return;
+  }
+
+  if (tamperActive && sekarang - lastTamperReportMs >= TAMPER_REPEAT_MS) {
+    reportTamper(true);
+  }
+}
+
+/* Membaca ketiga tombol pengujian dengan debounce, tanpa delay(). */
 void handleTestButtons() {
   for (size_t i = 0; i < TEST_BUTTON_COUNT; i++) {
     TestButton &tombol = testButtons[i];
@@ -1105,10 +1242,6 @@ void handleTestButtons() {
       tombol.pressed = true;
 
       switch (tombol.pin) {
-        case PIN_BTN_AUDIO_NORMAL:
-          simulateAudioNormal();
-          break;
-
         case PIN_BTN_AUDIO_DISTRESS:
           simulateAudioDistress();
           break;
@@ -1228,6 +1361,13 @@ void handleSerialCommands() {
       /* Jalur yang sama dengan tombol fisik dan tombol Wokwi, termasuk
        * verifikasi audio. */
       triggerSosPath("serial");
+      break;
+    }
+
+    case 'N': {
+      /* Menggantikan tombol NORMAL AUDIO yang sudah dihapus: GPIO 8 kini
+       * dipakai sensor tamper. */
+      simulateAudioNormal();
       break;
     }
 
@@ -1365,14 +1505,31 @@ void setup() {
    * setiap 8 detik). Tanpa interrupt, klik singkat pada saat request berjalan
    * hilang tanpa jejak - termasuk tombol SOS. */
   attachInterrupt(digitalPinToInterrupt(PIN_SOS_BUTTON), isrSos, FALLING);
-  attachInterrupt(digitalPinToInterrupt(PIN_BTN_AUDIO_NORMAL), isrBtnNormal,
-                  FALLING);
   attachInterrupt(digitalPinToInterrupt(PIN_BTN_AUDIO_DISTRESS),
                   isrBtnDistress, FALLING);
   attachInterrupt(digitalPinToInterrupt(PIN_BTN_POLL_SERVER), isrBtnPoll,
                   FALLING);
   attachInterrupt(digitalPinToInterrupt(PIN_BTN_RESET), isrBtnReset, FALLING);
-  Serial.println(F("[BOOT] Interrupt tombol aktif (SOS + 4 tombol uji)."));
+  Serial.println(F("[BOOT] Interrupt tombol aktif (SOS + 3 tombol uji)."));
+
+  /* Sensor tamper: hardware nyata, bukan pin simulasi.
+   *
+   * CHANGE dipakai karena pembukaan dan penutupan kembali keduanya perlu
+   * diketahui. Keadaan awal dibaca langsung: bila kotak sudah terbuka saat
+   * perangkat dinyalakan, itu harus terdeteksi sejak boot, bukan menunggu
+   * perubahan berikutnya. */
+  pinMode(PIN_TAMPER, INPUT_PULLUP);
+  tamperActive = (digitalRead(PIN_TAMPER) == TAMPER_ACTIVE_STATE);
+  tamperReported = false;
+  attachInterrupt(digitalPinToInterrupt(PIN_TAMPER), isrTamper, CHANGE);
+
+  Serial.printf("[BOOT] Sensor tamper aktif (GPIO %d, aktif=%s). Keadaan "
+                "awal: %s\n",
+                PIN_TAMPER, TAMPER_ACTIVE_STATE == LOW ? "LOW" : "HIGH",
+                tamperActive ? "KOTAK TERBUKA" : "kotak tertutup");
+  if (tamperActive) {
+    Serial.println(F("[TAMPER] PERINGATAN: kotak sudah terbuka saat boot."));
+  }
 
   /* WiFi dicoba sekali di sini. Bila gagal, setup() TIDAK berhenti:
    * perangkat masuk LOCAL MODE dan tetap dapat menyalakan strobe. */
@@ -1402,6 +1559,7 @@ void loop() {
    *    kejadian darurat, jadi tidak boleh tertunda oleh pekerjaan jaringan. */
   handleSos();
   handleTestButtons();
+  handleTamper();
   handleSerialCommands();
 
   /* 2. Pola strobe dan sirene. */

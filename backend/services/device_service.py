@@ -165,8 +165,97 @@ def record_heartbeat(data: dict) -> Device | None:
             payload=data,
         )
 
+    # Keadaan tamper ikut dibawa heartbeat sebagai jaring pengaman: bila
+    # POST /api/device/tamper sempat gagal karena jaringan, server tetap
+    # mengetahui keadaan sebenarnya dari heartbeat berikutnya.
+    #
+    # Hanya PERUBAHAN yang dicatat ke logs. Heartbeat datang setiap 8 detik,
+    # dan mencatat setiap laporan tamper akan membanjiri tabel logs sampai
+    # peristiwa nyata tidak lagi dapat ditemukan di antaranya.
+    _terapkan_tamper(device, bool(data.get("tamper")), sumber="HEARTBEAT")
+
     db.session.commit()
     return device
+
+
+def _terapkan_tamper(device: Device, aktif: bool, *, sumber: str) -> bool:
+    """Perbarui keadaan tamper device. Return True bila keadaannya BERUBAH.
+
+    TIDAK melakukan commit: pemanggil yang menentukan batas transaksi.
+
+    Yang penting di sini: `tamper_last_report` selalu diperbarui, tetapi log
+    hanya ditulis saat keadaan berubah. Tanpa pemisahan itu, heartbeat setiap
+    8 detik akan menghasilkan ribuan baris log identik dan peristiwa
+    pembongkaran yang sebenarnya menjadi tidak terlihat.
+    """
+    sebelumnya = bool(device.tamper)
+    device.tamper_last_report = utcnow()
+
+    if aktif == sebelumnya:
+        return False
+
+    device.tamper = aktif
+    device.tamper_since = utcnow() if aktif else None
+
+    if aktif:
+        write_log(
+            event_type="DEVICE_TAMPER_DETECTED",
+            message=(
+                f"Kotak perangkat {device.device_id} dibuka "
+                f"(terdeteksi lewat {sumber})."
+            ),
+            device_id=device.device_id,
+            payload={"tamper": True, "source": sumber},
+        )
+    else:
+        write_log(
+            event_type="DEVICE_TAMPER_CLEARED",
+            message=(
+                f"Kotak perangkat {device.device_id} kembali tertutup "
+                f"(terdeteksi lewat {sumber})."
+            ),
+            device_id=device.device_id,
+            payload={"tamper": False, "source": sumber},
+        )
+
+    return True
+
+
+def record_tamper(data: dict) -> tuple[Device | None, bool]:
+    """Catat laporan sensor tamper dari perangkat.
+
+    Return (device, berubah). device None bila belum terdaftar.
+
+    Tamper SENGAJA tidak membuat Incident dan tidak mengirim command apa pun
+    ke perangkat. Alasannya:
+
+    1. Verifikasi tahap 2 menilai bukti darurat korban (SOS + audio).
+       Pembongkaran kotak tidak memiliki keduanya, sehingga akan selalu
+       menghasilkan FALSE_ALARM - label yang salah untuk peristiwa yang
+       benar-benar terjadi.
+
+    2. Menyalakan sirene karena tamper memberi tahu pelaku bahwa ia
+       terdeteksi, dan membuat warga menyangka ada korban di lokasi.
+
+    Yang dilakukan hanyalah mencatat dan menandai device, sehingga operator
+    melihatnya di dashboard dan dapat memutuskan tindakan sendiri.
+    """
+    device = get_device(data["device_id"])
+    if device is None:
+        return None, False
+
+    if data.get("firmware_version"):
+        device.firmware_version = data["firmware_version"]
+
+    # Laporan tamper juga membuktikan perangkat masih hidup.
+    device.last_seen = utcnow()
+
+    berubah = _terapkan_tamper(
+        device, bool(data["tamper"]), sumber="LAPORAN_PERANGKAT"
+    )
+
+    db.session.commit()
+    return device, berubah
 
 
 def refresh_offline_status(timeout_seconds: int) -> int:

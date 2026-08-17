@@ -14,6 +14,7 @@ from backend.schemas import (
     validate_device_context_config,
     validate_device_register,
     validate_heartbeat,
+    validate_tamper,
 )
 from backend.services import device_service
 from backend.services.incident_service import get_active_incident_for_device
@@ -81,6 +82,54 @@ def heartbeat():
             "device": device.to_dict(offline_timeout()),
             "has_pending_command": pending > 0,
             "active_incident_id": incident.incident_id if incident else None,
+        }
+    )
+
+
+@devices_bp.post("/device/tamper")
+@require_device_api_key
+def report_tamper():
+    """POST /api/device/tamper
+
+    Perangkat melaporkan sensor tamper: kotak dibuka paksa, atau kembali
+    tertutup.
+
+    ENDPOINT INI SENGAJA TERPISAH dari /api/emergency/evaluate.
+
+    Tamper bukan keadaan darurat korban dan tidak memiliki bukti SOS maupun
+    audio. Bila dimasukkan ke verifikasi tahap 2, skornya akan selalu di bawah
+    ambang dan tercatat sebagai FALSE_ALARM - label yang keliru untuk
+    pembongkaran yang benar-benar terjadi, dan mengotori statistik incident.
+
+    Endpoint ini juga TIDAK membuat command apa pun. Sirene dan strobe hanya
+    untuk kejadian darurat; menyalakannya karena tamper memberi tahu pelaku
+    bahwa ia terdeteksi dan membuat warga menyangka ada korban.
+
+    Perangkat mengirim ulang laporan yang gagal, jadi endpoint ini bersifat
+    idempotent: laporan dengan keadaan yang sama tidak menambah log baru.
+    """
+    data, errors = validate_tamper(get_json_body())
+    if errors:
+        return fail("Payload tamper tidak valid.", 400, errors)
+
+    device, berubah = device_service.record_tamper(data)
+    if device is None:
+        return fail(
+            f"Device '{data['device_id']}' belum terdaftar. "
+            "Panggil POST /api/device/register terlebih dahulu.",
+            404,
+        )
+
+    return ok(
+        {
+            "device_id": device.device_id,
+            "tamper_state": device.tamper_state(),
+            "changed": berubah,
+            "message": (
+                "Tamper tercatat: kotak perangkat dibuka."
+                if device.tamper
+                else "Tamper pulih: kotak perangkat kembali tertutup."
+            ),
         }
     )
 

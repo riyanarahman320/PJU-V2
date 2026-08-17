@@ -47,7 +47,7 @@ ada firmware khusus Wokwi, dan tidak ada arsitektur yang diubah.
 |---|---|---|---|
 | Board | `board-esp32-s3-devkitc-1` | `esp` | ESP32-S3-DevKitC-1 |
 | Tombol SOS | `wokwi-pushbutton` (merah) | `btnSos` | tombol SOS di tiang PJU |
-| NORMAL AUDIO | `wokwi-pushbutton` (hijau) | `btnNormal` | **alat uji**, bukan hardware |
+| TAMPER | `wokwi-pushbutton` (cyan) | `btnTamper` | **saklar tamper di kotak perangkat** |
 | DISTRESS AUDIO | `wokwi-pushbutton` (kuning) | `btnDistress` | **alat uji**, bukan hardware |
 | POLL SERVER | `wokwi-pushbutton` (biru) | `btnPoll` | **alat uji**, bukan hardware |
 | RESET | `wokwi-pushbutton` (putih) | `btnReset` | **alat uji**, bukan hardware |
@@ -57,13 +57,40 @@ ada firmware khusus Wokwi, dan tidak ada arsitektur yang diubah.
 | Status jaringan | `wokwi-led` hijau + resistor 330 ohm | `ledStatus` | indikator WiFi |
 | Serial | `$serialMonitor` | - | Serial Monitor 115200 baud |
 
-Empat tombol yang ditandai **alat uji** tidak mewakili perangkat keras apa
-pun. Keduanya ada supaya pengujian dapat dilakukan dengan klik, menggantikan
-pengetikan Serial. Di tiang PJU sungguhan hanya ada **satu** tombol: SOS.
+Tiga tombol yang ditandai **alat uji** tidak mewakili perangkat keras apa pun.
+Ketiganya ada supaya pengujian dapat dilakukan dengan klik, menggantikan
+pengetikan Serial.
 
-Tombol NORMAL/DISTRESS AUDIO khususnya tidak boleh pernah ada di lapangan.
-Keduanya memalsukan hasil audio; di perangkat nyata nilai itu harus datang
-dari mikrofon.
+Dua tombol MEWAKILI hardware sungguhan dan dipasang di lapangan:
+
+- **SOS** — tombol di tiang PJU, ditekan warga.
+- **TAMPER** — saklar di dalam kotak perangkat, bukan tombol yang ditekan
+  orang. Ia berubah keadaan ketika tutup kotak dibuka.
+
+Tombol DISTRESS AUDIO tidak boleh pernah ada di lapangan: ia memalsukan hasil
+audio, sementara di perangkat nyata nilai itu harus datang dari mikrofon.
+
+### Catatan penting soal tombol TAMPER di Wokwi
+
+`wokwi-pushbutton` adalah saklar *momentary normally-open*: ia hanya tertutup
+selama ditekan. Saklar tamper sungguhan justru sebaliknya — *normally-closed*,
+tertekan oleh tutup kotak, dan **terbuka** saat kotak dibongkar.
+
+Karena itu `TAMPER_ACTIVE_STATE` berbeda menurut mode build:
+
+| Mode | Saklar | Level "kotak terbuka" |
+|---|---|---|
+| `WOKWI_BUILD 1` | pushbutton normally-open | `LOW` (ditekan) |
+| `WOKWI_BUILD 0` | saklar normally-closed | `HIGH` (terlepas) |
+
+Normally-closed dipilih untuk lapangan karena **kabel yang dipotong juga
+terbaca HIGH**, sehingga tetap dianggap tamper. Dengan normally-open, memotong
+kabel membuat sensor diam selamanya dan pembongkaran tidak akan pernah
+terdeteksi — kegagalan yang justru menguntungkan pelaku.
+
+Di Wokwi, tombol ini bersifat momentary, jadi menekan lalu melepasnya akan
+terlihat sebagai *kotak dibuka lalu ditutup kembali*. Keduanya dilaporkan ke
+server sebagai dua peristiwa terpisah. Itu perilaku yang benar.
 
 **Mikrofon tidak disimulasikan.** Dua alasan:
 
@@ -91,7 +118,7 @@ sebaliknya. Tidak ada pin yang diubah demi Wokwi.
 | Fungsi | Makro di `config.h` | GPIO | Pin Wokwi | Komponen |
 |---|---|---|---|---|
 | Tombol SOS | `PIN_SOS_BUTTON` | 4 | `esp:4` | `btnSos` ke GND |
-| NORMAL AUDIO | `PIN_BTN_AUDIO_NORMAL` | 8 | `esp:8` | `btnNormal` ke GND |
+| **TAMPER** | `PIN_TAMPER` | 8 | `esp:8` | `btnTamper` ke GND |
 | DISTRESS AUDIO | `PIN_BTN_AUDIO_DISTRESS` | 9 | `esp:9` | `btnDistress` ke GND |
 | POLL SERVER | `PIN_BTN_POLL_SERVER` | 10 | `esp:10` | `btnPoll` ke GND |
 | RESET | `PIN_BTN_RESET` | 11 | `esp:11` | `btnReset` ke GND |
@@ -109,7 +136,7 @@ Seluruh pin diperiksa terhadap definisi board resmi Wokwi (repositori
 wokwi-boards) dan terhadap fungsi tetap ESP32-S3. **Tidak ditemukan konflik.
 Tidak ada pin yang perlu diganti.**
 
-GPIO 4, 5, 6, 7, 15, dan tombol uji 8, 9, 10, 11 semuanya tersedia sebagai
+GPIO 4, 5, 6, 7, 8, 15, dan tombol uji 9, 10, 11 semuanya tersedia sebagai
 pin bebas di header DevKitC-1 dan tidak bertabrakan dengan:
 
 - strapping pin (0, 45, 46)
@@ -126,10 +153,16 @@ Dua catatan yang perlu diketahui:
 - Status pin di `config.h` masih ditandai **PIN TO CONFIRM**. Simulasi ini
   tidak mengubah status itu. Wokwi membuktikan pin tersebut benar secara
   *logika*, bukan bahwa wiring fisiknya sudah final. Lihat `WIRING.md`.
-- GPIO 8, 9, 10, 11 ditandai **WOKWI SIMULATION PIN** di `config.h`. Pin ini
+- GPIO 9, 10, 11 ditandai **WOKWI SIMULATION PIN** di `config.h`. Pin ini
   tidak dipakai di perangkat sungguhan. Tanpa tombol terpasang, pull-up
   internal membuat pin terbaca HIGH sehingga tidak pernah terpicu - firmware
   yang sama aman diupload ke board nyata.
+- **GPIO 8 BUKAN lagi pin simulasi.** Pin ini dahulu dipakai tombol NORMAL
+  AUDIO; sekarang menjadi sensor tamper dan **harus terpasang** di perangkat
+  sungguhan. Bila dibiarkan menggantung dengan `WOKWI_BUILD 0`, pull-up
+  internal membuatnya terbaca HIGH — dan HIGH berarti "kotak terbuka",
+  sehingga perangkat akan melaporkan tamper terus-menerus. Pasang saklarnya,
+  atau perangkat akan selalu tampak dibongkar.
 
 ### Board attribute
 
@@ -440,19 +473,28 @@ diagram Wokwi:
 
 | Tombol | Fungsi |
 |---|---|
-| NORMAL AUDIO | simulasi audio non-distress (0.20, kelas Normal) |
 | DISTRESS AUDIO | simulasi audio distress (0.90, kelas SCREAM) |
 | SOS | trigger emergency (lewat verifikasi lokal) |
+| TAMPER | sensor kotak dibuka (**hardware nyata**, bukan alat uji) |
 | POLL SERVER | mengambil command dari server |
 | RESET | reset emergency ke READY |
 
+Tombol NORMAL AUDIO **sudah tidak ada**: GPIO 8 sekarang dipakai sensor
+tamper. Untuk menguji jalur LOCAL_REJECTED, pakai perintah Serial `N` (atau
+`A 0.20`) lalu tekan SOS.
+
 Tiga hal yang perlu dipahami tentang tombol ini:
 
-**1. Tombol audio tidak menjalankan emergency.** NORMAL/DISTRESS AUDIO hanya
-menyetel keadaan audio, sama seperti `A` dan `K` di Serial. Emergency tetap
-harus dimulai dari tombol SOS. Ini disengaja: kalau tombol audio langsung
-memicu emergency, aturan "SOS tidak pernah melewati verifikasi audio" tidak
-dapat diuji lagi.
+**1. Tombol audio tidak menjalankan emergency.** DISTRESS AUDIO hanya menyetel
+keadaan audio, sama seperti `A` dan `K` di Serial. Emergency tetap harus
+dimulai dari tombol SOS. Ini disengaja: kalau tombol audio langsung memicu
+emergency, aturan "SOS tidak pernah melewati verifikasi audio" tidak dapat
+diuji lagi.
+
+**1b. TAMPER tidak menjalankan emergency juga**, tetapi dengan alasan yang
+berbeda: pembongkaran kotak bukan bukti adanya korban. Ia dilaporkan lewat
+`POST /api/device/tamper`, dicatat server, dan tampil di dashboard — tanpa
+membuat incident dan tanpa menyalakan sirene atau strobe.
 
 **2. Keadaan audio bertahan sampai reset.** Klik DISTRESS AUDIO lalu SOS, dan
 SOS memakai 0.90. Keadaan itu hanya dikosongkan oleh `resetEmergency()`
@@ -524,7 +566,8 @@ K Normal
 S
 ```
 
-Atau cukup klik: **NORMAL AUDIO** lalu **SOS**.
+Atau ketik `N` di Serial lalu klik **SOS**. (Tombol NORMAL AUDIO sudah tidak
+ada; GPIO 8 kini sensor tamper.)
 
 Diharapkan:
 

@@ -94,6 +94,26 @@ class Device(db.Model):
     # jadwal acara. Default "No", dapat diubah manual dari dashboard.
     public_event = db.Column(db.String(8), nullable=False, default="No")
     holiday = db.Column(db.String(8), nullable=False, default="No")
+
+    # --- Sensor tamper (kotak perangkat dibuka paksa) -------------------
+    # HARDWARE NYATA, bukan estimasi: saklar di dalam kotak perangkat.
+    #
+    # Keadaan ini TIDAK memengaruhi verifikasi darurat sama sekali. Tamper
+    # bukan bukti adanya korban, jadi ia tidak masuk skor incident maupun
+    # menyalakan sirene. Yang terjadi hanya pencatatan dan peringatan
+    # operator di dashboard.
+    #
+    # Default False untuk perangkat yang firmware-nya belum mendukung tamper.
+    tamper = db.Column(db.Boolean, nullable=False, default=False)
+
+    # Kapan tamper mulai aktif. Dipakai dashboard untuk menampilkan sudah
+    # berapa lama kotak dalam keadaan terbuka. NULL bila tidak sedang tamper.
+    tamper_since = db.Column(db.DateTime(timezone=True), nullable=True)
+
+    # Laporan tamper terakhir yang diterima, baik aktif maupun pulih.
+    # Dipertahankan walau tamper sudah kembali False, sebagai jejak bahwa
+    # perangkat ini pernah dibongkar.
+    tamper_last_report = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at = db.Column(
         db.DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
@@ -134,6 +154,20 @@ class Device(db.Model):
             "holiday_source": "STATIC_CONFIG",
         }
 
+    def tamper_state(self) -> dict:
+        """Keadaan sensor tamper untuk API dan dashboard.
+
+        `ever_tampered` dibuat eksplisit supaya perangkat yang pernah dibongkar
+        tetap terlihat walau kotaknya sudah ditutup kembali. Menutup kotak
+        tidak menghapus fakta bahwa ia pernah dibuka.
+        """
+        return {
+            "tamper": bool(self.tamper),
+            "tamper_since": iso(self.tamper_since),
+            "tamper_last_report": iso(self.tamper_last_report),
+            "ever_tampered": self.tamper_last_report is not None,
+        }
+
     def rf_config_complete(self) -> bool:
         """True bila seluruh konfigurasi yang dibutuhkan model sudah diisi.
 
@@ -169,6 +203,8 @@ class Device(db.Model):
             # Konfigurasi konteks untuk Random Forest.
             "context_config": self.context_config(),
             "rf_config_complete": self.rf_config_complete(),
+            # Keadaan sensor tamper. Tidak memengaruhi verifikasi darurat.
+            "tamper_state": self.tamper_state(),
         }
 
 

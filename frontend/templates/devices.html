@@ -11,6 +11,18 @@
 </p>
 
 <div class="notice">
+  <strong>Sensor tamper.</strong>
+  Kolom <em>Tamper</em> menunjukkan keadaan saklar di dalam kotak perangkat.
+  Tamper <em>tidak</em> memengaruhi verifikasi darurat dan <em>tidak</em>
+  menyalakan sirene maupun strobe: pembongkaran kotak bukan bukti adanya
+  korban. Peristiwanya hanya dicatat dan ditandai di sini, sehingga operator
+  yang memutuskan tindakan. Tanda
+  <span class="badge badge-warn">PERNAH DIBONGKAR</span> tetap muncul walau
+  kotak sudah ditutup kembali &mdash; menutup kotak tidak menghapus fakta
+  bahwa ia pernah dibuka.
+</div>
+
+<div class="notice">
   <strong>Population_Density belum tersedia.</strong>
   Data kepadatan penduduk per titik PJU belum dimiliki, sehingga prediksi
   hotspot berstatus <span class="mono">MISSING_FEATURES</span> dan
@@ -38,13 +50,14 @@
           <th>Online/Offline</th>
           <th>Last Seen</th>
           <th>Firmware</th>
+          <th>Tamper</th>
           <th>Konfigurasi Konteks</th>
           <th>Incident Aktif</th>
           <th>Aksi</th>
         </tr>
       </thead>
       <tbody id="deviceBody">
-        <tr><td colspan="10" class="empty">Memuat…</td></tr>
+        <tr><td colspan="11" class="empty">Memuat…</td></tr>
       </tbody>
     </table>
   </div>

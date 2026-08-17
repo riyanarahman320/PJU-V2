@@ -188,9 +188,50 @@ def validate_heartbeat(payload):
         "network": _clean_bool(payload, "network", errors, default=True),
         "audio": _clean_bool(payload, "audio", errors, default=True),
         "camera": _clean_bool(payload, "camera", errors, default=False),
+        # Keadaan sensor tamper (kotak perangkat dibuka paksa).
+        #
+        # Default False dipilih sadar: firmware lama tidak mengirim field ini,
+        # dan menganggap "tidak dikirim" sebagai tamper aktif akan memunculkan
+        # peringatan palsu untuk seluruh perangkat yang belum diperbarui.
+        # Konsekuensinya, perangkat berfirmware lama TIDAK dapat melaporkan
+        # tamper - itu keterbatasan yang diketahui, bukan kelalaian.
+        "tamper": _clean_bool(payload, "tamper", errors, default=False),
         "firmware_version": _clean_string(
             payload, "firmware_version", errors, max_length=32, default=""
         ),
+    }
+
+    if errors:
+        return None, errors
+    return data, []
+
+
+def validate_tamper(payload):
+    """POST /api/device/tamper
+
+    Laporan sensor tamper dari perangkat. Sengaja TERPISAH dari
+    /api/emergency/evaluate: tamper bukan keadaan darurat korban dan tidak
+    memiliki bukti SOS maupun audio, sehingga bila dimasukkan ke verifikasi
+    tahap 2 ia akan selalu jatuh menjadi FALSE_ALARM dan mengotori data
+    incident.
+
+    Field `tamper` wajib dan eksplisit. Tidak ada nilai default di sini:
+    laporan tamper yang tidak menyebutkan keadaannya tidak bermakna, dan
+    menebaknya berisiko menyembunyikan pembongkaran yang sebenarnya terjadi.
+    """
+    payload, errors = _require_dict(payload)
+    if errors:
+        return None, errors
+
+    data = {
+        "device_id": _clean_string(
+            payload, "device_id", errors, required=True, max_length=MAX_DEVICE_ID
+        ),
+        "tamper": _clean_bool(payload, "tamper", errors, required=True),
+        "firmware_version": _clean_string(
+            payload, "firmware_version", errors, max_length=32, default=""
+        ),
+        "note": _clean_string(payload, "note", errors, max_length=255, default=""),
     }
 
     if errors:
